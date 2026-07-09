@@ -1,0 +1,4 @@
+DONE: Display date as DD/MM/YYYY instead of DD.MM.YYYY
+TODO: Make columns of tables be extendable (change size by dragging left or right edge)
+TODO: Figure out easier launch
+DONE: Remove tiny vertical orange line when a row is selected in a table

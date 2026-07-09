@@ -1,0 +1,94 @@
+Data model:
+
+SpendingRecord:
+- ID
+- amount (> 0)
+- category
+- date of purchase (by default equal to date of record)
+- date of record (hidden in UI by default)
+- note (hidden in UI by default)
+
+Example list of SpendingRecord:
+    1, 14.20, food, 11.06.2026, 11.06.2026, zaredih toaletna hartiq za 19 meseca
+    2, 02.30, transport, 06.06.2026, 08.06.2026
+    3, 1.00, misc, 06.06.2026, 08.06.2026
+
+IncomeRecord:
+- ID
+- amount (> 0)
+- date of income (by default equal to date of record)
+- date of record (hidden in UI by default)
+- note (hidden in UI by default)
+
+Example list of IncomeRecord:
+    4, 3560, 03.06.2026, 13.06.2026
+    5, 200, 06.06.2026, 13.06.2026, lessons June and May
+    6, 1600, 04.06.2026, 12.06.2026, invoice 2026-012
+
+============================================================================
+
+Database:
+- no actual database
+- save records in a single JSON file
+- should be editable by hand
+- maybe later we'll make it encrypted (no longer editable by hand) but for now a raw JSON is good
+
+============================================================================
+
+UI requirements:
+
+1. an "Add"/"+" button for adding a new record
+- pops up a modal dialog where you need to select/input:
+    - dropdown / radio buttons to choose Income or Spending
+    - text input to enter amount (allows only > 0 numbers)
+    - date widget to enter date of purchase (by default set to today)
+    - text input to enter note (optional, can leave empty)
+    - Add button
+    - Cancel button
+- once you click Add, it should validate what you entered. If wrong show in red which widget's value is wrong.
+If ok, create record in database, close modal dialog and update the rest of UI.
+- if you click Cancel, close modal dialog.
+
+2. a dropdown for selecting year and month. (later will be extended to custom period)
+For now, combined in one dropdown with options like:
+- June 2026
+- July 2026
+- August 2026
+Only for the months that we have records for.
+
+3. a table showing SpendingRecords for the selected period (later will be extended to custom period).
+- columns matching the fields of the SpendingRecord data model, but hide ID and hide date of record
+(later there will be an option to show ID and show date of record, maybe with a tooltip maybe as a column)
+(maybe later we'll also hide the note and let it be inside the tooltip or sth)
+- one row for each record
+
+4. a table showing IncomeRecords for the selected period (later will be extended to custom period).
+- columns matching the fields of the IncomeRecords data model, but hide ID and hide date of record
+(later there will be an option to show ID and show date of record, maybe with a tooltip maybe as a column)
+- one row for each record
+
+(Later there will be a dropdown or radio buttons or something to choose which of the 2 tables is visible or both)
+
+===============================================================================
+
+Other requirements:
+- The API that loads/exports data and does queries on it, make it independent from the specifics of UI.
+It should be possible and easy to create a CLI tool
+that interacts with the data in a similar way that the UI does.
+It should be programmable if needed for more complex queries.
+UI should be just the convenient way to view the data and do standard queries.
+
+===============================================================================
+
+Future plans:
+- There will be 2 users of the program - Boris and Milena.
+  There should be a Boris mode, a Milena mode, and a Boris and Milena mode.
+  Switching between them will be done through 3 tabs on the top, or something like that.
+  IncomeRecords and SpendingRecords will be extended with a "user" field (holding Boris or Milena).
+  When in Boris mode only records with user Boris will be shown.
+  When in Milena mode only records with user Milena will be shown.
+  When in Boris and Milena both will be shown.
+  When in Boris created records will be automatically assigned user Boris.
+  When in Milena created records will be automatically assigned user Milena.
+  When in Boris and Milena there will be no option to create a record, only view.
+
