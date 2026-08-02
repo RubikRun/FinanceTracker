@@ -15,10 +15,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Iterable, Optional, Union
 
+from .config import USERS
 from .models import IncomeRecord, SpendingRecord
 
 # Bumped if the on-disk JSON layout ever changes (helps future migrations).
-DATA_VERSION = 1
+DATA_VERSION = 2
 
 PathLike = Union[str, Path]
 
@@ -27,6 +28,11 @@ def month_range(year: int, month: int) -> tuple[date, date]:
     """First and last calendar day of a given month, inclusive."""
     last_day = calendar.monthrange(year, month)[1]
     return date(year, month, 1), date(year, month, last_day)
+
+
+def _matches_user(record_user: str, user: Optional[str]) -> bool:
+    """`user=None` means both people (no filter)."""
+    return user is None or record_user == user
 
 
 class FinanceStore:
@@ -96,15 +102,19 @@ class FinanceStore:
         amount: Union[Decimal, str, float, int],
         category: str,
         on_date: date,
+        user: str,
         note: str = "",
         recorded_on: Optional[date] = None,
     ) -> SpendingRecord:
+        if user not in USERS:
+            raise ValueError(f"Unknown user {user!r}; expected one of {USERS}")
         record = SpendingRecord(
             id=self._take_id(),
             amount=Decimal(str(amount)),
             category=category,
             date=on_date,
             date_recorded=recorded_on or date.today(),
+            user=user,
             note=note,
         )
         self.spending.append(record)
@@ -114,14 +124,18 @@ class FinanceStore:
         self,
         amount: Union[Decimal, str, float, int],
         on_date: date,
+        user: str,
         note: str = "",
         recorded_on: Optional[date] = None,
     ) -> IncomeRecord:
+        if user not in USERS:
+            raise ValueError(f"Unknown user {user!r}; expected one of {USERS}")
         record = IncomeRecord(
             id=self._take_id(),
             amount=Decimal(str(amount)),
             date=on_date,
             date_recorded=recorded_on or date.today(),
+            user=user,
             note=note,
         )
         self.income.append(record)
@@ -136,32 +150,55 @@ class FinanceStore:
 
     # ------------------------------------------------------------------ #
     # Queries (period = inclusive [start, end] date range)
+    # `user=None` means both people; otherwise filter to that person.
     # ------------------------------------------------------------------ #
-    def spending_between(self, start: date, end: date) -> list[SpendingRecord]:
-        return [r for r in self.spending if start <= r.date <= end]
+    def spending_between(
+        self, start: date, end: date, user: Optional[str] = None
+    ) -> list[SpendingRecord]:
+        return [
+            r
+            for r in self.spending
+            if start <= r.date <= end and _matches_user(r.user, user)
+        ]
 
-    def income_between(self, start: date, end: date) -> list[IncomeRecord]:
-        return [r for r in self.income if start <= r.date <= end]
+    def income_between(
+        self, start: date, end: date, user: Optional[str] = None
+    ) -> list[IncomeRecord]:
+        return [
+            r
+            for r in self.income
+            if start <= r.date <= end and _matches_user(r.user, user)
+        ]
 
-    def total_spent(self, start: date, end: date) -> Decimal:
-        return sum((r.amount for r in self.spending_between(start, end)), Decimal("0"))
+    def total_spent(
+        self, start: date, end: date, user: Optional[str] = None
+    ) -> Decimal:
+        return sum(
+            (r.amount for r in self.spending_between(start, end, user)), Decimal("0")
+        )
 
-    def total_earned(self, start: date, end: date) -> Decimal:
-        return sum((r.amount for r in self.income_between(start, end)), Decimal("0"))
+    def total_earned(
+        self, start: date, end: date, user: Optional[str] = None
+    ) -> Decimal:
+        return sum(
+            (r.amount for r in self.income_between(start, end, user)), Decimal("0")
+        )
 
-    def gap(self, start: date, end: date) -> Decimal:
+    def gap(self, start: date, end: date, user: Optional[str] = None) -> Decimal:
         """Income minus spending for the period (positive = saved money)."""
-        return self.total_earned(start, end) - self.total_spent(start, end)
+        return self.total_earned(start, end, user) - self.total_spent(start, end, user)
 
-    def available_months(self) -> list[tuple[int, int]]:
-        """`(year, month)` pairs that have at least one record, newest first.
+    def available_months(self, user: Optional[str] = None) -> list[tuple[int, int]]:
+        """`(year, month)` pairs that have at least one matching record, newest first.
 
         Used to populate the period dropdown so it only offers months that
-        actually contain data.
+        actually contain data for the active view.
         """
         months: set[tuple[int, int]] = set()
         for record in self.spending:
-            months.add((record.date.year, record.date.month))
+            if _matches_user(record.user, user):
+                months.add((record.date.year, record.date.month))
         for record in self.income:
-            months.add((record.date.year, record.date.month))
+            if _matches_user(record.user, user):
+                months.add((record.date.year, record.date.month))
         return sorted(months, reverse=True)

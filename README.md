@@ -8,11 +8,14 @@ This is **v0.0**: the bare-minimum version.
 
 ## What it does
 
-- Add **income** and **spending** records through a simple dialog.
-- Pick a **month** to view (the dropdown only lists months that have records).
+- Switch between **Boris**, **Milena**, and **Boris & Milena** with tabs at the top.
+- In a personal tab, add **income** and **spending** (auto-assigned to that person).
+- In **Boris & Milena**, view both people's records together (totals combined; no adding).
+- Pick a **month** to view (the dropdown only lists months that have records for the
+  active tab).
 - See, for the selected month:
-  - a **Spending** table (date, category, amount, note),
-  - an **Income** table (date, amount, note),
+  - a **Spending** table (date, category, amount, note; plus **Who** in the combined view),
+  - an **Income** table (date, amount, note; plus **Who** in the combined view),
   - totals: **Earned**, **Spent**, and the **Gap** (earned − spent; green when
     positive, red when negative).
 
@@ -75,10 +78,11 @@ python main.py
 The CLI reads/writes the same `finance_data.json`:
 
 ```bash
-python cli.py add-spending 14.20 Food 2026-06-11 --note "toilet paper"
-python cli.py add-income 3560 2026-06-03
+python cli.py add-spending Boris 14.20 Food 2026-06-11 --note "toilet paper"
+python cli.py add-income Milena 3560 2026-06-03
 python cli.py summary 2026 6
-python cli.py list 2026 6
+python cli.py summary 2026 6 --user Boris
+python cli.py list 2026 6 --user Milena
 ```
 
 ## The data file
@@ -88,26 +92,28 @@ record. It is plain JSON and safe to edit by hand. Example:
 
 ```json
 {
-  "version": 1,
-  "next_id": 7,
+  "version": 2,
+  "next_id": 3,
   "spending": [
-    { "id": 1, "amount": 14.2, "category": "Food", "date": "2026-06-11", "date_recorded": "2026-06-11", "note": "toilet paper" }
+    { "id": 1, "amount": 14.2, "category": "Food", "date": "2026-06-11", "date_recorded": "2026-06-11", "user": "Boris", "note": "toilet paper" }
   ],
   "income": [
-    { "id": 4, "amount": 3560, "date": "2026-06-03", "date_recorded": "2026-06-13", "note": "" }
+    { "id": 2, "amount": 3560, "date": "2026-06-03", "date_recorded": "2026-06-13", "user": "Milena", "note": "" }
   ]
 }
 ```
 
-IDs are a single shared sequence across both income and spending.
+IDs are a single shared sequence across both income and spending. Every record
+has a `user` field (`Boris` or `Milena`).
 
 To share data between two machines, point both at the same file by editing
 `DATA_FILENAME` / `default_data_path()` in `finance/config.py` (e.g. to a
 Dropbox/iCloud/OneDrive folder).
 
-## Changing categories or currency
+## Changing categories, currency or people
 
 Edit `finance/config.py`:
 
 - `CATEGORIES` — the fixed list shown in the spending category dropdown.
 - `CURRENCY_SYMBOL` — the symbol shown next to amounts.
+- `USERS` — the two people (currently Boris and Milena).

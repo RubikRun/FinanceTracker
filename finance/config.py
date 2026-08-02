@@ -24,6 +24,14 @@ CATEGORIES: list[str] = [
     "Misc",
 ]
 
+# The two people who use the app. Stored on every record as `user`.
+USERS: tuple[str, ...] = ("Boris", "Milena")
+USER_BORIS = USERS[0]
+USER_MILENA = USERS[1]
+
+# Combined view label (UI only — never stored on a record).
+VIEW_BOTH_LABEL = "Boris & Milena"
+
 # Currency symbol shown next to amounts (storage stays a plain number).
 CURRENCY_SYMBOL = "\u20ac"  # euro sign
 

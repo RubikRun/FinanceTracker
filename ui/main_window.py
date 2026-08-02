@@ -1,8 +1,9 @@
-"""Main application window: period selector, summary and the two tables."""
+"""Main application window: person tabs, period selector, summary and tables."""
 from __future__ import annotations
 
 import calendar
 from decimal import Decimal
+from typing import Optional
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
@@ -16,16 +17,31 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStyle,
     QStyledItemDelegate,
+    QTabBar,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
-from finance.config import DISPLAY_DATE_FORMAT, format_amount
+from finance.config import (
+    DISPLAY_DATE_FORMAT,
+    USER_BORIS,
+    USER_MILENA,
+    VIEW_BOTH_LABEL,
+    format_amount,
+)
 from finance.store import FinanceStore, month_range
 
 from .add_dialog import AddDialog
+
+# Tab indices — keep in sync with the order tabs are added in `_build_ui`.
+_TAB_BORIS = 0
+_TAB_MILENA = 1
+_TAB_BOTH = 2
+
+# Column index of the "Who" column in both tables (hidden in personal modes).
+_WHO_COLUMN = 1
 
 
 class _NoFocusDelegate(QStyledItemDelegate):
@@ -46,9 +62,12 @@ class MainWindow(QMainWindow):
     def __init__(self, store: FinanceStore) -> None:
         super().__init__()
         self.store = store
+        # Active person filter: a user name, or None for the combined view.
+        self._view_user: Optional[str] = USER_BORIS
         self.setWindowTitle("Finance Tracker")
-        self.resize(820, 640)
+        self.resize(860, 660)
         self._build_ui()
+        self._apply_mode_ui()
         self._reload_periods()
 
     # ------------------------------------------------------------------ #
@@ -59,11 +78,30 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         root = QVBoxLayout(central)
 
+        # --- Person tabs (primary navigation) ---
+        self.mode_tabs = QTabBar()
+        self.mode_tabs.setExpanding(False)
+        self.mode_tabs.setDrawBase(False)
+        self.mode_tabs.addTab(USER_BORIS)
+        self.mode_tabs.addTab(USER_MILENA)
+        # Qt uses '&' as a mnemonic marker in tab text; '&&' shows a literal '&'.
+        self.mode_tabs.addTab(VIEW_BOTH_LABEL.replace("&", "&&"))
+        self.mode_tabs.currentChanged.connect(self._on_mode_changed)
+        root.addWidget(self.mode_tabs)
+
         # --- Top bar: Add button + period selector ---
         top = QHBoxLayout()
         self.add_btn = QPushButton("+ Add")
         self.add_btn.clicked.connect(self._on_add)
         top.addWidget(self.add_btn)
+
+        # Shown in the combined view instead of the Add button.
+        self.view_only_label = QLabel(
+            "View only — switch to Boris or Milena to add a record."
+        )
+        self.view_only_label.setStyleSheet("color: #666;")
+        top.addWidget(self.view_only_label)
+
         top.addSpacing(20)
         top.addWidget(QLabel("Period:"))
         self.period_combo = QComboBox()
@@ -92,19 +130,21 @@ class MainWindow(QMainWindow):
 
         spending_box = QGroupBox("Spending")
         spending_layout = QVBoxLayout(spending_box)
-        self.spending_table = QTableWidget(0, 4)
+        # Columns: Date, Who, Category, Amount, Note  (Who hidden in personal modes)
+        self.spending_table = QTableWidget(0, 5)
         self.spending_table.setHorizontalHeaderLabels(
-            ["Date", "Category", "Amount", "Note"]
+            ["Date", "Who", "Category", "Amount", "Note"]
         )
-        self._setup_table(self.spending_table, [90, 130, 110, 200])
+        self._setup_table(self.spending_table, [90, 80, 130, 110, 200])
         spending_layout.addWidget(self.spending_table)
         splitter.addWidget(spending_box)
 
         income_box = QGroupBox("Income")
         income_layout = QVBoxLayout(income_box)
-        self.income_table = QTableWidget(0, 3)
-        self.income_table.setHorizontalHeaderLabels(["Date", "Amount", "Note"])
-        self._setup_table(self.income_table, [90, 110, 200])
+        # Columns: Date, Who, Amount, Note  (Who hidden in personal modes)
+        self.income_table = QTableWidget(0, 4)
+        self.income_table.setHorizontalHeaderLabels(["Date", "Who", "Amount", "Note"])
+        self._setup_table(self.income_table, [90, 80, 110, 200])
         income_layout.addWidget(self.income_table)
         splitter.addWidget(income_box)
 
@@ -131,18 +171,60 @@ class MainWindow(QMainWindow):
             table.setColumnWidth(column, width)
 
     # ------------------------------------------------------------------ #
+    # Mode (Boris / Milena / Both)
+    # ------------------------------------------------------------------ #
+    def _on_mode_changed(self, index: int) -> None:
+        if index == _TAB_BORIS:
+            self._view_user = USER_BORIS
+        elif index == _TAB_MILENA:
+            self._view_user = USER_MILENA
+        else:
+            self._view_user = None  # combined view
+
+        # Keep the selected month when switching tabs if it still has data.
+        previous_period = self.period_combo.currentData()
+        self._apply_mode_ui()
+        self._reload_periods(prefer=previous_period)
+
+    def _apply_mode_ui(self) -> None:
+        """Show/hide Add vs view-only hint, and the Who column."""
+        is_combined = self._view_user is None
+        self.add_btn.setVisible(not is_combined)
+        self.view_only_label.setVisible(is_combined)
+
+        # In a personal mode the Who column is redundant — every row is that person.
+        # In the combined view it's essential so you can tell records apart.
+        self.spending_table.setColumnHidden(_WHO_COLUMN, not is_combined)
+        self.income_table.setColumnHidden(_WHO_COLUMN, not is_combined)
+
+        if is_combined:
+            self.setWindowTitle(f"Finance Tracker — {VIEW_BOTH_LABEL}")
+        else:
+            self.setWindowTitle(f"Finance Tracker — {self._view_user}")
+            self.add_btn.setText(f"+ Add for {self._view_user}")
+
+    # ------------------------------------------------------------------ #
     # Data binding
     # ------------------------------------------------------------------ #
-    def _reload_periods(self) -> None:
-        """Rebuild the period dropdown from the months that have records."""
+    def _reload_periods(self, prefer: Optional[tuple[int, int]] = None) -> None:
+        """Rebuild the period dropdown from months that have records in this view."""
         self.period_combo.blockSignals(True)
         self.period_combo.clear()
-        for year, month in self.store.available_months():
+        for year, month in self.store.available_months(self._view_user):
             label = f"{calendar.month_name[month]} {year}"
             self.period_combo.addItem(label, (year, month))
         self.period_combo.blockSignals(False)
-        if self.period_combo.count():
-            self.period_combo.setCurrentIndex(0)
+
+        if self.period_combo.count() == 0:
+            self._refresh_view()
+            return
+
+        index = 0
+        if prefer is not None:
+            found = self.period_combo.findData(prefer)
+            if found >= 0:
+                index = found
+        self.period_combo.setCurrentIndex(index)
         self._refresh_view()
 
     def _refresh_view(self) -> None:
@@ -155,12 +237,18 @@ class MainWindow(QMainWindow):
 
         year, month = period
         start, end = month_range(year, month)
-        spending = sorted(self.store.spending_between(start, end), key=lambda r: r.date)
-        income = sorted(self.store.income_between(start, end), key=lambda r: r.date)
+        user = self._view_user
+        spending = sorted(
+            self.store.spending_between(start, end, user), key=lambda r: (r.date, r.id)
+        )
+        income = sorted(
+            self.store.income_between(start, end, user), key=lambda r: (r.date, r.id)
+        )
         self._fill_spending(spending)
         self._fill_income(income)
         self._update_summary(
-            self.store.total_earned(start, end), self.store.total_spent(start, end)
+            self.store.total_earned(start, end, user),
+            self.store.total_spent(start, end, user),
         )
 
     def _fill_spending(self, records) -> None:
@@ -169,9 +257,12 @@ class MainWindow(QMainWindow):
             date_item = QTableWidgetItem(record.date.strftime(DISPLAY_DATE_FORMAT))
             date_item.setData(Qt.UserRole, record.id)  # keep id for future use
             self.spending_table.setItem(row, 0, date_item)
-            self.spending_table.setItem(row, 1, QTableWidgetItem(record.category))
-            self.spending_table.setItem(row, 2, QTableWidgetItem(format_amount(record.amount)))
-            self.spending_table.setItem(row, 3, QTableWidgetItem(record.note))
+            self.spending_table.setItem(row, 1, QTableWidgetItem(record.user))
+            self.spending_table.setItem(row, 2, QTableWidgetItem(record.category))
+            self.spending_table.setItem(
+                row, 3, QTableWidgetItem(format_amount(record.amount))
+            )
+            self.spending_table.setItem(row, 4, QTableWidgetItem(record.note))
 
     def _fill_income(self, records) -> None:
         self.income_table.setRowCount(len(records))
@@ -179,8 +270,11 @@ class MainWindow(QMainWindow):
             date_item = QTableWidgetItem(record.date.strftime(DISPLAY_DATE_FORMAT))
             date_item.setData(Qt.UserRole, record.id)
             self.income_table.setItem(row, 0, date_item)
-            self.income_table.setItem(row, 1, QTableWidgetItem(format_amount(record.amount)))
-            self.income_table.setItem(row, 2, QTableWidgetItem(record.note))
+            self.income_table.setItem(row, 1, QTableWidgetItem(record.user))
+            self.income_table.setItem(
+                row, 2, QTableWidgetItem(format_amount(record.amount))
+            )
+            self.income_table.setItem(row, 3, QTableWidgetItem(record.note))
 
     def _update_summary(self, earned: Decimal, spent: Decimal) -> None:
         gap = earned - spent
@@ -196,7 +290,10 @@ class MainWindow(QMainWindow):
     # Actions
     # ------------------------------------------------------------------ #
     def _on_add(self) -> None:
-        dialog = AddDialog(self)
+        if self._view_user is None:
+            return  # Combined view is view-only (button is hidden, but be safe).
+
+        dialog = AddDialog(for_user=self._view_user, parent=self)
         if not dialog.exec():
             return  # Cancelled
 
@@ -206,12 +303,14 @@ class MainWindow(QMainWindow):
                 amount=data["amount"],
                 category=data["category"],
                 on_date=data["date"],
+                user=data["user"],
                 note=data["note"],
             )
         else:
             self.store.add_income(
                 amount=data["amount"],
                 on_date=data["date"],
+                user=data["user"],
                 note=data["note"],
             )
         self.store.save()
@@ -219,7 +318,4 @@ class MainWindow(QMainWindow):
         # A new record may introduce a new month; rebuild and then jump to the
         # month of the record we just added so the user sees it immediately.
         target = (data["date"].year, data["date"].month)
-        self._reload_periods()
-        index = self.period_combo.findData(target)
-        if index >= 0:
-            self.period_combo.setCurrentIndex(index)
+        self._reload_periods(prefer=target)

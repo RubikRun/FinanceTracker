@@ -11,7 +11,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from .config import ISO_DATE_FORMAT
+from .config import ISO_DATE_FORMAT, USERS
 
 
 def _to_decimal(value: Any) -> Decimal:
@@ -35,6 +35,13 @@ def _date_to_iso(value: date) -> str:
     return value.strftime(ISO_DATE_FORMAT)
 
 
+def _parse_user(value: Any) -> str:
+    user = str(value)
+    if user not in USERS:
+        raise ValueError(f"Unknown user {user!r}; expected one of {USERS}")
+    return user
+
+
 @dataclass
 class SpendingRecord:
     id: int
@@ -42,6 +49,7 @@ class SpendingRecord:
     category: str
     date: date          # date of purchase
     date_recorded: date
+    user: str           # Boris or Milena
     note: str = ""
 
     def to_dict(self) -> dict:
@@ -51,6 +59,7 @@ class SpendingRecord:
             "category": self.category,
             "date": _date_to_iso(self.date),
             "date_recorded": _date_to_iso(self.date_recorded),
+            "user": self.user,
             "note": self.note,
         }
 
@@ -62,6 +71,7 @@ class SpendingRecord:
             category=str(data.get("category", "")),
             date=_date_from_iso(data["date"]),
             date_recorded=_date_from_iso(data["date_recorded"]),
+            user=_parse_user(data["user"]),
             note=str(data.get("note", "")),
         )
 
@@ -72,6 +82,7 @@ class IncomeRecord:
     amount: Decimal
     date: date          # date of income
     date_recorded: date
+    user: str           # Boris or Milena
     note: str = ""
 
     def to_dict(self) -> dict:
@@ -80,6 +91,7 @@ class IncomeRecord:
             "amount": _amount_to_json(self.amount),
             "date": _date_to_iso(self.date),
             "date_recorded": _date_to_iso(self.date_recorded),
+            "user": self.user,
             "note": self.note,
         }
 
@@ -90,5 +102,6 @@ class IncomeRecord:
             amount=_to_decimal(data["amount"]),
             date=_date_from_iso(data["date"]),
             date_recorded=_date_from_iso(data["date_recorded"]),
+            user=_parse_user(data["user"]),
             note=str(data.get("note", "")),
         )

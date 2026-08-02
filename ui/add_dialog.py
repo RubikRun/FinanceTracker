@@ -30,18 +30,26 @@ class AddDialog(QDialog):
     """Collects user input for a new record.
 
     The dialog only gathers and validates input; it does not touch the store.
+    The active person (`for_user`) is assigned automatically by the caller —
+    there is no person picker here, so you can't accidentally create a record
+    under the wrong name while in Boris or Milena mode.
     On success `result_data` holds a dict the caller uses to create the record.
     """
 
-    def __init__(self, parent=None) -> None:
+    def __init__(self, for_user: str, parent=None) -> None:
         super().__init__(parent)
-        self.setWindowTitle("Add record")
+        self.for_user = for_user
+        self.setWindowTitle(f"Add for {for_user}")
         self.setModal(True)
         self.result_data: Optional[dict] = None
         self._build_ui()
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
+
+        context = QLabel(f"This record will be saved under <b>{self.for_user}</b>.")
+        context.setWordWrap(True)
+        layout.addWidget(context)
 
         # --- Income / Spending selector ---
         type_row = QHBoxLayout()
@@ -129,6 +137,7 @@ class AddDialog(QDialog):
                 "category": self.category_combo.currentText(),
                 "date": on_date,
                 "note": note,
+                "user": self.for_user,
             }
         else:
             self.result_data = {
@@ -136,6 +145,7 @@ class AddDialog(QDialog):
                 "amount": amount,
                 "date": on_date,
                 "note": note,
+                "user": self.for_user,
             }
         self.accept()
 

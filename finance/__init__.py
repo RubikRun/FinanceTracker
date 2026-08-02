@@ -7,6 +7,10 @@ small CLI (cli.py) are both just thin clients on top of `FinanceStore`.
 from .config import (
     CATEGORIES,
     CURRENCY_SYMBOL,
+    USER_BORIS,
+    USER_MILENA,
+    USERS,
+    VIEW_BOTH_LABEL,
     default_data_path,
     format_amount,
 )
@@ -16,6 +20,10 @@ from .store import FinanceStore, month_range
 __all__ = [
     "CATEGORIES",
     "CURRENCY_SYMBOL",
+    "USER_BORIS",
+    "USER_MILENA",
+    "USERS",
+    "VIEW_BOTH_LABEL",
     "default_data_path",
     "format_amount",
     "IncomeRecord",
