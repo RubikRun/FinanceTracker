@@ -371,14 +371,10 @@ class MainWindow(QMainWindow):
         if period is None:
             return
 
-        year, month = period
-        start, end = month_range(year, month)
-        slices = self.store.spending_by_category(start, end, self._view_user)
-        who = self._view_user if self._view_user is not None else VIEW_BOTH_LABEL
         dialog = SpendingChartDialog(
-            period_label=f"{calendar.month_name[month]} {year}",
-            who=who,
-            slices=slices,
+            store=self.store,
+            initial_period=period,
+            initial_user=self._view_user,
             parent=self,
         )
         dialog.exec()

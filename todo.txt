@@ -4,3 +4,5 @@ DONE: Remove tiny vertical orange line when a row is selected in a table
 DONE: Allow editing of entries from the two tables. When you right click edit on a row of a table a dialog should pop up, similar to the one that pops up when you add a row, but with the data already filled in and you can edit it.
 DONE: Allow deleting an entry of a table by right click delete.
 DONE: When clicking Add, default the new entry's date to the first day of the selected period. 
+DONE: In spending chart window allow for changing the month and/or the person (Boris, Milena, Boris and Milena)
+TODO: In spending chart below each category listed on the right show how it's divided between Boris and Milena, on a new line with a lighter shade of gray (0x1c1c1c)

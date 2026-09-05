@@ -1,64 +1,93 @@
 """Modal dialog with a pie chart of spending split by category."""
 from __future__ import annotations
 
+import calendar
 from decimal import Decimal
+from typing import Optional
 
 from PySide6.QtCharts import QChart, QChartView, QPieSeries
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QPainter
 from PySide6.QtWidgets import (
+    QComboBox,
     QDialog,
     QHBoxLayout,
     QLabel,
     QPushButton,
     QVBoxLayout,
+    QWidget,
 )
 
-from finance.config import chart_color_for, format_amount
+from finance.config import (
+    USER_BORIS,
+    USER_MILENA,
+    VIEW_BOTH_LABEL,
+    chart_color_for,
+    format_amount,
+)
+from finance.store import FinanceStore, month_range
+
+
+def _period_tuple(data) -> Optional[tuple[int, int]]:
+    """Normalize combo item data to `(year, month)`."""
+    if data is None:
+        return None
+    try:
+        year, month = data
+        return (int(year), int(month))
+    except (TypeError, ValueError):
+        return None
 
 
 class SpendingChartDialog(QDialog):
-    """Shows how spending in a period is divided between categories.
+    """Pie chart of spending by category, with month and person selectors.
 
-    `slices` is `(category, amount)` pairs, typically from
-    `FinanceStore.spending_by_category`. An empty list shows a short
-    explanation instead of a blank chart.
+    Opens on the same period and person as the main window, then lets you
+    change either without affecting the main window. An empty period shows a
+    short explanation instead of a blank chart.
     """
 
     def __init__(
         self,
-        period_label: str,
-        who: str,
-        slices: list[tuple[str, Decimal]],
+        store: FinanceStore,
+        initial_period: tuple[int, int],
+        initial_user: Optional[str],
         parent=None,
     ) -> None:
         super().__init__(parent)
+        self.store = store
         self.setWindowTitle("Spending by category")
         self.setModal(True)
-        self.resize(720, 520)
-        self._build_ui(period_label, who, slices)
+        self.resize(720, 560)
+        self._build_ui()
+        self._select_person(initial_user)
+        self._reload_periods(prefer=initial_period)
 
-    def _build_ui(
-        self,
-        period_label: str,
-        who: str,
-        slices: list[tuple[str, Decimal]],
-    ) -> None:
+    def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
 
-        heading = QLabel(f"{period_label} — {who}")
-        heading.setStyleSheet("font-size: 15px; font-weight: bold;")
-        layout.addWidget(heading)
+        top = QHBoxLayout()
+        top.addWidget(QLabel("Period:"))
+        self.period_combo = QComboBox()
+        self.period_combo.setMinimumWidth(160)
+        self.period_combo.currentIndexChanged.connect(self._refresh_chart)
+        top.addWidget(self.period_combo)
 
-        if not slices:
-            empty = QLabel("No spending in this period.")
-            empty.setStyleSheet("color: #666;")
-            layout.addWidget(empty, 1, Qt.AlignCenter)
-        else:
-            total = sum((amount for _, amount in slices), Decimal("0"))
-            total_label = QLabel(f"Total spent: {format_amount(total)}")
-            layout.addWidget(total_label)
-            layout.addWidget(self._make_chart(slices, total), 1)
+        top.addSpacing(16)
+        top.addWidget(QLabel("Person:"))
+        self.person_combo = QComboBox()
+        self.person_combo.addItem(USER_BORIS, USER_BORIS)
+        self.person_combo.addItem(USER_MILENA, USER_MILENA)
+        self.person_combo.addItem(VIEW_BOTH_LABEL, "")
+        self.person_combo.currentIndexChanged.connect(self._on_person_changed)
+        top.addWidget(self.person_combo)
+        top.addStretch(1)
+        layout.addLayout(top)
+
+        self.body = QWidget()
+        self.body_layout = QVBoxLayout(self.body)
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(self.body, 1)
 
         button_row = QHBoxLayout()
         button_row.addStretch(1)
@@ -67,6 +96,80 @@ class SpendingChartDialog(QDialog):
         close_btn.clicked.connect(self.accept)
         button_row.addWidget(close_btn)
         layout.addLayout(button_row)
+
+    def _select_person(self, user: Optional[str]) -> None:
+        self.person_combo.blockSignals(True)
+        if user:
+            index = self.person_combo.findData(user)
+            self.person_combo.setCurrentIndex(index if index >= 0 else 0)
+        else:
+            self.person_combo.setCurrentIndex(self.person_combo.count() - 1)
+        self.person_combo.blockSignals(False)
+
+    def _selected_user(self) -> Optional[str]:
+        data = self.person_combo.currentData()
+        return data if data else None
+
+    def _find_period_index(self, period) -> int:
+        want = _period_tuple(period)
+        if want is None:
+            return -1
+        for i in range(self.period_combo.count()):
+            if _period_tuple(self.period_combo.itemData(i)) == want:
+                return i
+        return -1
+
+    def _on_person_changed(self) -> None:
+        prefer = _period_tuple(self.period_combo.currentData())
+        self._reload_periods(prefer=prefer)
+
+    def _reload_periods(self, prefer: Optional[tuple[int, int]] = None) -> None:
+        self.period_combo.blockSignals(True)
+        self.period_combo.clear()
+        for year, month in self.store.available_months(self._selected_user()):
+            label = f"{calendar.month_name[month]} {year}"
+            self.period_combo.addItem(label, (year, month))
+
+        if self.period_combo.count() > 0:
+            index = 0
+            if prefer is not None:
+                found = self._find_period_index(prefer)
+                if found >= 0:
+                    index = found
+            self.period_combo.setCurrentIndex(index)
+        self.period_combo.blockSignals(False)
+        self._refresh_chart()
+
+    def _refresh_chart(self) -> None:
+        while self.body_layout.count():
+            item = self.body_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+
+        period = _period_tuple(self.period_combo.currentData())
+        if period is None:
+            self.body_layout.addWidget(self._empty_label(), 1, Qt.AlignCenter)
+            return
+
+        year, month = period
+        start, end = month_range(year, month)
+        slices = self.store.spending_by_category(start, end, self._selected_user())
+        if not slices:
+            self.body_layout.addWidget(self._empty_label(), 1, Qt.AlignCenter)
+            return
+
+        total = sum((amount for _, amount in slices), Decimal("0"))
+        total_label = QLabel(f"Total spent: {format_amount(total)}")
+        self.body_layout.addWidget(total_label)
+        self.body_layout.addWidget(self._make_chart(slices, total), 1)
+
+    @staticmethod
+    def _empty_label() -> QLabel:
+        empty = QLabel("No spending in this period.")
+        empty.setStyleSheet("color: #666;")
+        return empty
 
     def _make_chart(
         self, slices: list[tuple[str, Decimal]], total: Decimal
