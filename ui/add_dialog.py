@@ -1,4 +1,4 @@
-"""Modal dialog for adding a new income or spending record."""
+"""Modal dialog for adding or editing an income or spending record."""
 from __future__ import annotations
 
 from datetime import date
@@ -27,22 +27,31 @@ _ERROR_STYLE = "border: 1px solid red;"
 
 
 class AddDialog(QDialog):
-    """Collects user input for a new record.
+    """Collects user input for a new or existing record.
 
     The dialog only gathers and validates input; it does not touch the store.
     The active person (`for_user`) is assigned automatically by the caller —
     there is no person picker here, so you can't accidentally create a record
     under the wrong name while in Boris or Milena mode.
-    On success `result_data` holds a dict the caller uses to create the record.
+    Pass `initial` (same keys as `result_data`) to open in edit mode with
+    fields pre-filled. On success `result_data` holds a dict the caller uses
+    to create or update the record.
     """
 
-    def __init__(self, for_user: str, parent=None) -> None:
+    def __init__(
+        self, for_user: str, parent=None, initial: Optional[dict] = None
+    ) -> None:
         super().__init__(parent)
         self.for_user = for_user
-        self.setWindowTitle(f"Add for {for_user}")
+        self._editing = initial is not None
+        self.setWindowTitle(
+            f"Edit for {for_user}" if self._editing else f"Add for {for_user}"
+        )
         self.setModal(True)
         self.result_data: Optional[dict] = None
         self._build_ui()
+        if initial is not None:
+            self._prefill(initial)
 
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
@@ -99,7 +108,7 @@ class AddDialog(QDialog):
         button_row = QHBoxLayout()
         button_row.addStretch(1)
         self.cancel_btn = QPushButton("Cancel")
-        self.add_btn = QPushButton("Add")
+        self.add_btn = QPushButton("Save" if self._editing else "Add")
         self.add_btn.setDefault(True)
         button_row.addWidget(self.cancel_btn)
         button_row.addWidget(self.add_btn)
@@ -110,6 +119,23 @@ class AddDialog(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         self.spending_radio.toggled.connect(self._update_category_visibility)
         self._update_category_visibility()
+
+    def _prefill(self, data: dict) -> None:
+        if data.get("type") == "income":
+            self.income_radio.setChecked(True)
+        else:
+            self.spending_radio.setChecked(True)
+
+        self.amount_edit.setText(f"{data['amount']:.2f}")
+        on_date = data["date"]
+        self.date_edit.setDate(QDate(on_date.year, on_date.month, on_date.day))
+        self.note_edit.setText(data.get("note", ""))
+
+        category = data.get("category")
+        if category:
+            if self.category_combo.findText(category) < 0:
+                self.category_combo.addItem(category)
+            self.category_combo.setCurrentText(category)
 
     def _update_category_visibility(self) -> None:
         # Category only applies to spending records.

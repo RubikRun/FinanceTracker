@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHeaderView,
     QLabel,
     QMainWindow,
+    QMenu,
     QPushButton,
     QSplitter,
     QStyle,
@@ -136,6 +137,10 @@ class MainWindow(QMainWindow):
             ["Date", "Who", "Category", "Amount", "Note"]
         )
         self._setup_table(self.spending_table, [90, 80, 130, 110, 200])
+        self.spending_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.spending_table.customContextMenuRequested.connect(
+            lambda pos: self._on_table_context_menu(self.spending_table, pos)
+        )
         spending_layout.addWidget(self.spending_table)
         splitter.addWidget(spending_box)
 
@@ -145,6 +150,10 @@ class MainWindow(QMainWindow):
         self.income_table = QTableWidget(0, 4)
         self.income_table.setHorizontalHeaderLabels(["Date", "Who", "Amount", "Note"])
         self._setup_table(self.income_table, [90, 80, 110, 200])
+        self.income_table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.income_table.customContextMenuRequested.connect(
+            lambda pos: self._on_table_context_menu(self.income_table, pos)
+        )
         income_layout.addWidget(self.income_table)
         splitter.addWidget(income_box)
 
@@ -206,6 +215,30 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------ #
     # Data binding
     # ------------------------------------------------------------------ #
+    @staticmethod
+    def _period_tuple(data) -> Optional[tuple[int, int]]:
+        """Normalize combo item data to `(year, month)`.
+
+        Qt may round-trip the Python tuple as a list (or other sequence), so
+        callers should not rely on `QComboBox.findData` matching a tuple.
+        """
+        if data is None:
+            return None
+        try:
+            year, month = data
+            return (int(year), int(month))
+        except (TypeError, ValueError):
+            return None
+
+    def _find_period_index(self, period) -> int:
+        want = self._period_tuple(period)
+        if want is None:
+            return -1
+        for i in range(self.period_combo.count()):
+            if self._period_tuple(self.period_combo.itemData(i)) == want:
+                return i
+        return -1
+
     def _reload_periods(self, prefer: Optional[tuple[int, int]] = None) -> None:
         """Rebuild the period dropdown from months that have records in this view."""
         self.period_combo.blockSignals(True)
@@ -221,14 +254,14 @@ class MainWindow(QMainWindow):
 
         index = 0
         if prefer is not None:
-            found = self.period_combo.findData(prefer)
+            found = self._find_period_index(prefer)
             if found >= 0:
                 index = found
         self.period_combo.setCurrentIndex(index)
         self._refresh_view()
 
     def _refresh_view(self) -> None:
-        period = self.period_combo.currentData()
+        period = self._period_tuple(self.period_combo.currentData())
         if period is None:
             self._fill_spending([])
             self._fill_income([])
@@ -255,7 +288,7 @@ class MainWindow(QMainWindow):
         self.spending_table.setRowCount(len(records))
         for row, record in enumerate(records):
             date_item = QTableWidgetItem(record.date.strftime(DISPLAY_DATE_FORMAT))
-            date_item.setData(Qt.UserRole, record.id)  # keep id for future use
+            date_item.setData(Qt.UserRole, record.id)  # record id for edit
             self.spending_table.setItem(row, 0, date_item)
             self.spending_table.setItem(row, 1, QTableWidgetItem(record.user))
             self.spending_table.setItem(row, 2, QTableWidgetItem(record.category))
@@ -319,3 +352,63 @@ class MainWindow(QMainWindow):
         # month of the record we just added so the user sees it immediately.
         target = (data["date"].year, data["date"].month)
         self._reload_periods(prefer=target)
+
+    def _on_table_context_menu(self, table: QTableWidget, pos) -> None:
+        index = table.indexAt(pos)
+        if not index.isValid():
+            return
+        row = index.row()
+        id_item = table.item(row, 0)
+        if id_item is None:
+            return
+        record_id = id_item.data(Qt.UserRole)
+        if record_id is None:
+            return
+
+        table.selectRow(row)
+        menu = QMenu(self)
+        edit_action = menu.addAction("Edit")
+        chosen = menu.exec(table.viewport().mapToGlobal(pos))
+        if chosen == edit_action:
+            self._on_edit(int(record_id))
+
+    def _on_edit(self, record_id: int) -> None:
+        spending = self.store.get_spending(record_id)
+        income = self.store.get_income(record_id)
+        record = spending if spending is not None else income
+        if record is None:
+            return
+
+        initial = {
+            "type": "spending" if spending is not None else "income",
+            "amount": record.amount,
+            "date": record.date,
+            "note": record.note,
+        }
+        if spending is not None:
+            initial["category"] = spending.category
+
+        old_period = (record.date.year, record.date.month)
+
+        dialog = AddDialog(for_user=record.user, parent=self, initial=initial)
+        if not dialog.exec():
+            return
+
+        data = dialog.result_data
+        self.store.update_record(
+            record_id,
+            record_type=data["type"],
+            amount=data["amount"],
+            on_date=data["date"],
+            note=data["note"],
+            category=data.get("category", ""),
+        )
+        self.store.save()
+
+        new_period = (data["date"].year, data["date"].month)
+        if new_period == old_period:
+            # Stay on the month the user was viewing; only the row contents change.
+            self._refresh_view()
+        else:
+            # Date moved to another month (the old month may now be empty).
+            self._reload_periods(prefer=new_period)

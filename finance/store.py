@@ -141,6 +141,79 @@ class FinanceStore:
         self.income.append(record)
         return record
 
+    def get_spending(self, record_id: int) -> Optional[SpendingRecord]:
+        """Return the spending record with `record_id`, or None."""
+        return next((r for r in self.spending if r.id == record_id), None)
+
+    def get_income(self, record_id: int) -> Optional[IncomeRecord]:
+        """Return the income record with `record_id`, or None."""
+        return next((r for r in self.income if r.id == record_id), None)
+
+    def update_record(
+        self,
+        record_id: int,
+        record_type: str,
+        amount: Union[Decimal, str, float, int],
+        on_date: date,
+        note: str = "",
+        category: str = "",
+    ) -> Union[SpendingRecord, IncomeRecord]:
+        """Update a record, converting between spending and income if needed.
+
+        Keeps the original id, user, and date_recorded. List order is preserved
+        when the type does not change.
+        """
+        if record_type not in ("spending", "income"):
+            raise ValueError(
+                f"Unknown record type {record_type!r}; expected 'spending' or 'income'"
+            )
+
+        spending = self.get_spending(record_id)
+        income = self.get_income(record_id)
+        if spending is None and income is None:
+            raise KeyError(f"No record with id {record_id}")
+
+        amount_value = Decimal(str(amount))
+
+        if record_type == "spending":
+            if spending is not None:
+                spending.amount = amount_value
+                spending.category = category
+                spending.date = on_date
+                spending.note = note
+                return spending
+            assert income is not None
+            self.income.remove(income)
+            converted = SpendingRecord(
+                id=income.id,
+                amount=amount_value,
+                category=category,
+                date=on_date,
+                date_recorded=income.date_recorded,
+                user=income.user,
+                note=note,
+            )
+            self.spending.append(converted)
+            return converted
+
+        if income is not None:
+            income.amount = amount_value
+            income.date = on_date
+            income.note = note
+            return income
+        assert spending is not None
+        self.spending.remove(spending)
+        converted = IncomeRecord(
+            id=spending.id,
+            amount=amount_value,
+            date=on_date,
+            date_recorded=spending.date_recorded,
+            user=spending.user,
+            note=note,
+        )
+        self.income.append(converted)
+        return converted
+
     def _take_id(self) -> int:
         # A single global counter shared by both record types, matching the
         # example data where IDs run continuously across spending and income.
