@@ -14,6 +14,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMenu,
+    QMessageBox,
     QPushButton,
     QSplitter,
     QStyle,
@@ -368,9 +369,12 @@ class MainWindow(QMainWindow):
         table.selectRow(row)
         menu = QMenu(self)
         edit_action = menu.addAction("Edit")
+        delete_action = menu.addAction("Delete")
         chosen = menu.exec(table.viewport().mapToGlobal(pos))
         if chosen == edit_action:
             self._on_edit(int(record_id))
+        elif chosen == delete_action:
+            self._on_delete(int(record_id))
 
     def _on_edit(self, record_id: int) -> None:
         spending = self.store.get_spending(record_id)
@@ -412,3 +416,38 @@ class MainWindow(QMainWindow):
         else:
             # Date moved to another month (the old month may now be empty).
             self._reload_periods(prefer=new_period)
+
+    def _on_delete(self, record_id: int) -> None:
+        spending = self.store.get_spending(record_id)
+        income = self.store.get_income(record_id)
+        record = spending if spending is not None else income
+        if record is None:
+            return
+
+        when = record.date.strftime(DISPLAY_DATE_FORMAT)
+        amount = format_amount(record.amount)
+        if spending is not None:
+            kind = "spending"
+            detail = f"{amount} ({spending.category}) on {when}"
+        else:
+            kind = "income"
+            detail = f"{amount} on {when}"
+
+        answer = QMessageBox.question(
+            self,
+            "Delete record",
+            f"Delete this {kind} for {record.user}?\n{detail}",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+
+        period = self._period_tuple(self.period_combo.currentData())
+        self.store.delete_record(record_id)
+        self.store.save()
+
+        if period is not None and period in self.store.available_months(self._view_user):
+            self._refresh_view()
+        else:
+            self._reload_periods(prefer=period)

@@ -214,6 +214,18 @@ class FinanceStore:
         self.income.append(converted)
         return converted
 
+    def delete_record(self, record_id: int) -> Union[SpendingRecord, IncomeRecord]:
+        """Remove a spending or income record by id and return it."""
+        spending = self.get_spending(record_id)
+        if spending is not None:
+            self.spending.remove(spending)
+            return spending
+        income = self.get_income(record_id)
+        if income is not None:
+            self.income.remove(income)
+            return income
+        raise KeyError(f"No record with id {record_id}")
+
     def _take_id(self) -> int:
         # A single global counter shared by both record types, matching the
         # example data where IDs run continuously across spending and income.
