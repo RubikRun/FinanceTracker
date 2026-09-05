@@ -12,15 +12,23 @@ from pathlib import Path
 # Predefined spending categories shown in the (fixed) Add-dialog dropdown.
 # Add or remove entries here to change the available categories.
 CATEGORIES: list[str] = [
-    "Food",
     "Groceries",
     "Eating out",
     "Transport",
-    "Housing",
-    "Utilities",
+    "Rent",
+    "Bills / Utilities",
+    "Home Stuff",
     "Health",
+    "Personal care",
     "Entertainment",
+    "Sports",
     "Shopping",
+    "Maintenance",
+    "Car Stuff",
+    "Work Expenses",
+    "Hobbies",
+    "Gifts",
+    "Holiday",
     "Misc",
 ]
 
