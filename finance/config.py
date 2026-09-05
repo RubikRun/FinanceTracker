@@ -32,6 +32,33 @@ CATEGORIES: list[str] = [
     "Misc",
 ]
 
+# Colours for the spending-by-category pie chart (Tableau 20).
+# Hex strings, one per slice. Categories in CATEGORIES above map in order
+# (Groceries → first colour, Eating out → second, …). If you add more
+# categories than colours, the list wraps around. Edit freely.
+CHART_COLORS: list[str] = [
+    "#4E79A7",  # blue
+    "#F28E2B",  # orange
+    "#E15759",  # red
+    "#76B7B2",  # teal
+    "#59A14F",  # green
+    "#EDC948",  # yellow
+    "#B07AA1",  # purple
+    "#FF9DA7",  # pink
+    "#9C755F",  # brown
+    "#BAB0AC",  # grey
+    "#A0CBE8",  # light blue
+    "#FFBE7D",  # light orange
+    "#FF9D9A",  # light red
+    "#8CD17D",  # light green
+    "#B6992D",  # olive
+    "#499894",  # dark teal
+    "#D37295",  # magenta
+    "#D4A6C8",  # lilac
+    "#86BCB6",  # mint
+    "#F1CE63",  # gold
+]
+
 # The two people who use the app. Stored on every record as `user`.
 USERS: tuple[str, ...] = ("Boris", "Milena")
 USER_BORIS = USERS[0]
@@ -64,3 +91,14 @@ def default_data_path() -> Path:
 def format_amount(value: Decimal) -> str:
     """Format a monetary amount with two decimals and the currency symbol."""
     return f"{value:.2f}\u00a0{CURRENCY_SYMBOL}"
+
+
+def chart_color_for(category: str) -> str:
+    """Hex colour for a spending category in the pie chart."""
+    if not CHART_COLORS:
+        return "#888888"
+    try:
+        index = CATEGORIES.index(category)
+    except ValueError:
+        index = sum(ord(ch) for ch in category)
+    return CHART_COLORS[index % len(CHART_COLORS)]

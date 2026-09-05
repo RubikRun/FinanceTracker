@@ -262,6 +262,20 @@ class FinanceStore:
             (r.amount for r in self.spending_between(start, end, user)), Decimal("0")
         )
 
+    def spending_by_category(
+        self, start: date, end: date, user: Optional[str] = None
+    ) -> list[tuple[str, Decimal]]:
+        """Spending totals grouped by category, largest first.
+
+        Categories with no spending in the period are omitted. `user=None`
+        means both people.
+        """
+        totals: dict[str, Decimal] = {}
+        for record in self.spending_between(start, end, user):
+            category = record.category or "Uncategorized"
+            totals[category] = totals.get(category, Decimal("0")) + record.amount
+        return sorted(totals.items(), key=lambda item: (-item[1], item[0]))
+
     def total_earned(
         self, start: date, end: date, user: Optional[str] = None
     ) -> Decimal:

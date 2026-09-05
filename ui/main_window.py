@@ -37,6 +37,7 @@ from finance.config import (
 from finance.store import FinanceStore, month_range
 
 from .add_dialog import AddDialog
+from .spending_chart_dialog import SpendingChartDialog
 
 # Tab indices — keep in sync with the order tabs are added in `_build_ui`.
 _TAB_BORIS = 0
@@ -111,6 +112,11 @@ class MainWindow(QMainWindow):
         self.period_combo.setMinimumWidth(160)
         self.period_combo.currentIndexChanged.connect(self._refresh_view)
         top.addWidget(self.period_combo)
+
+        self.chart_btn = QPushButton("Spending chart")
+        self.chart_btn.clicked.connect(self._on_spending_chart)
+        top.addWidget(self.chart_btn)
+
         top.addStretch(1)
         root.addLayout(top)
 
@@ -264,6 +270,7 @@ class MainWindow(QMainWindow):
 
     def _refresh_view(self) -> None:
         period = self._period_tuple(self.period_combo.currentData())
+        self.chart_btn.setEnabled(period is not None)
         if period is None:
             self._fill_spending([])
             self._fill_income([])
@@ -358,6 +365,23 @@ class MainWindow(QMainWindow):
         # month of the record we just added so the user sees it immediately.
         target = (data["date"].year, data["date"].month)
         self._reload_periods(prefer=target)
+
+    def _on_spending_chart(self) -> None:
+        period = self._period_tuple(self.period_combo.currentData())
+        if period is None:
+            return
+
+        year, month = period
+        start, end = month_range(year, month)
+        slices = self.store.spending_by_category(start, end, self._view_user)
+        who = self._view_user if self._view_user is not None else VIEW_BOTH_LABEL
+        dialog = SpendingChartDialog(
+            period_label=f"{calendar.month_name[month]} {year}",
+            who=who,
+            slices=slices,
+            parent=self,
+        )
+        dialog.exec()
 
     def _on_table_context_menu(self, table: QTableWidget, pos) -> None:
         index = table.indexAt(pos)
