@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import calendar
+from datetime import date
 from decimal import Decimal
 from typing import Optional
 
@@ -327,7 +328,11 @@ class MainWindow(QMainWindow):
         if self._view_user is None:
             return  # Combined view is view-only (button is hidden, but be safe).
 
-        dialog = AddDialog(for_user=self._view_user, parent=self)
+        period = self._period_tuple(self.period_combo.currentData())
+        default_date = date(period[0], period[1], 1) if period else None
+        dialog = AddDialog(
+            for_user=self._view_user, parent=self, default_date=default_date
+        )
         if not dialog.exec():
             return  # Cancelled
 

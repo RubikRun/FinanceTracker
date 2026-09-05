@@ -34,16 +34,22 @@ class AddDialog(QDialog):
     there is no person picker here, so you can't accidentally create a record
     under the wrong name while in Boris or Milena mode.
     Pass `initial` (same keys as `result_data`) to open in edit mode with
-    fields pre-filled. On success `result_data` holds a dict the caller uses
-    to create or update the record.
+    fields pre-filled. Pass `default_date` in add mode to seed the date
+    widget (the first day of the currently selected period). On success
+    `result_data` holds a dict the caller uses to create or update the record.
     """
 
     def __init__(
-        self, for_user: str, parent=None, initial: Optional[dict] = None
+        self,
+        for_user: str,
+        parent=None,
+        initial: Optional[dict] = None,
+        default_date: Optional[date] = None,
     ) -> None:
         super().__init__(parent)
         self.for_user = for_user
         self._editing = initial is not None
+        self._default_date = default_date
         self.setWindowTitle(
             f"Edit for {for_user}" if self._editing else f"Add for {for_user}"
         )
@@ -89,7 +95,16 @@ class AddDialog(QDialog):
         self.date_edit = QDateEdit()
         self.date_edit.setCalendarPopup(True)
         self.date_edit.setDisplayFormat("dd/MM/yyyy")
-        self.date_edit.setDate(QDate.currentDate())
+        if self._default_date is not None:
+            self.date_edit.setDate(
+                QDate(
+                    self._default_date.year,
+                    self._default_date.month,
+                    self._default_date.day,
+                )
+            )
+        else:
+            self.date_edit.setDate(QDate.currentDate())
         form.addRow("Date", self.date_edit)
 
         self.note_edit = QLineEdit()
