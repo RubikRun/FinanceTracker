@@ -1,4 +1,7 @@
 DONE: Display date as DD/MM/YYYY instead of DD.MM.YYYY
 TODO: Make columns of tables be extendable (change size by dragging left or right edge)
-TODO: Figure out easier launch
+DONE: Figure out easier launch
 DONE: Remove tiny vertical orange line when a row is selected in a table
+TODO: Allow editing of entries from the two tables. When you right click edit on a row of a table a dialog should pop up, similar to the one that pops up when you add a row, but with the data already filled in and you can edit it.
+TODO: Allow deleting an entry of a table by right click delete.
+TODO: In Period "August 2026", when clicking "+Add for Milena" the date of the new entry should default to 01.08.2026 
