@@ -7,18 +7,22 @@ from typing import Optional
 
 from PySide6.QtCharts import QChart, QChartView, QPieSeries
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPainter
+from PySide6.QtGui import QColor, QPainter, QPalette
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QPushButton,
+    QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
 from finance.config import (
+    CHART_SPLIT_LABEL_COLOR,
     USER_BORIS,
     USER_MILENA,
     VIEW_BOTH_LABEL,
@@ -26,6 +30,27 @@ from finance.config import (
     format_amount,
 )
 from finance.store import FinanceStore, month_range
+
+
+def _muted_text_color(widget: QWidget) -> QColor:
+    """Secondary legend colour that still contrasts with the window.
+
+    Uses `CHART_SPLIT_LABEL_COLOR` when set; otherwise mixes the theme's text
+    colour toward the window background so the line is dimmer, not invisible.
+    """
+    configured = CHART_SPLIT_LABEL_COLOR.strip()
+    if configured:
+        return QColor(configured)
+    palette = widget.palette()
+    fg = palette.color(QPalette.WindowText)
+    bg = palette.color(QPalette.Window)
+    keep = 0.62
+    fade = 1.0 - keep
+    return QColor(
+        round(fg.red() * keep + bg.red() * fade),
+        round(fg.green() * keep + bg.green() * fade),
+        round(fg.blue() * keep + bg.blue() * fade),
+    )
 
 
 def _period_tuple(data) -> Optional[tuple[int, int]]:
@@ -58,7 +83,7 @@ class SpendingChartDialog(QDialog):
         self.store = store
         self.setWindowTitle("Spending by category")
         self.setModal(True)
-        self.resize(720, 560)
+        self.resize(880, 560)
         self._build_ui()
         self._select_person(initial_user)
         self._reload_periods(prefer=initial_period)
@@ -141,12 +166,7 @@ class SpendingChartDialog(QDialog):
         self._refresh_chart()
 
     def _refresh_chart(self) -> None:
-        while self.body_layout.count():
-            item = self.body_layout.takeAt(0)
-            widget = item.widget()
-            if widget is not None:
-                widget.setParent(None)
-                widget.deleteLater()
+        self._clear_layout(self.body_layout)
 
         period = _period_tuple(self.period_combo.currentData())
         if period is None:
@@ -161,9 +181,26 @@ class SpendingChartDialog(QDialog):
             return
 
         total = sum((amount for _, amount in slices), Decimal("0"))
+        split = self.store.spending_split_by_category(start, end)
         total_label = QLabel(f"Total spent: {format_amount(total)}")
         self.body_layout.addWidget(total_label)
-        self.body_layout.addWidget(self._make_chart(slices, total), 1)
+
+        chart_row = QHBoxLayout()
+        chart_row.addWidget(self._make_chart(slices), 1)
+        chart_row.addWidget(self._make_legend(slices, total, split), 0)
+        self.body_layout.addLayout(chart_row, 1)
+
+    @staticmethod
+    def _clear_layout(layout) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            child = item.layout()
+            if widget is not None:
+                widget.setParent(None)
+                widget.deleteLater()
+            elif child is not None:
+                SpendingChartDialog._clear_layout(child)
 
     @staticmethod
     def _empty_label() -> QLabel:
@@ -171,17 +208,13 @@ class SpendingChartDialog(QDialog):
         empty.setStyleSheet("color: #666;")
         return empty
 
-    def _make_chart(
-        self, slices: list[tuple[str, Decimal]], total: Decimal
-    ) -> QChartView:
+    def _make_chart(self, slices: list[tuple[str, Decimal]]) -> QChartView:
         series = QPieSeries()
-        series.setPieSize(0.58)
-        series.setHorizontalPosition(0.35)
+        series.setPieSize(0.72)
+        series.setHorizontalPosition(0.5)
 
         for category, amount in slices:
-            percent = (amount / total * 100) if total else Decimal("0")
-            label = f"{category}  {format_amount(amount)}  ({percent:.1f}%)"
-            pie_slice = series.append(label, float(amount))
+            pie_slice = series.append(category, float(amount))
             pie_slice.setLabelVisible(False)
             # Don't connect hovered to setExploded directly: PySide can't wrap
             # that C++ method as a slot ("No Wrapper found").
@@ -194,11 +227,79 @@ class SpendingChartDialog(QDialog):
         # Theme colours are applied on addSeries; set ours afterwards so they stick.
         for pie_slice, (category, _) in zip(series.slices(), slices):
             pie_slice.setColor(QColor(chart_color_for(category)))
-        chart.legend().setAlignment(Qt.AlignRight)
-        chart.legend().setShowToolTips(True)
+        chart.legend().hide()
         chart.setAnimationOptions(QChart.SeriesAnimations)
         chart.layout().setContentsMargins(0, 0, 0, 0)
 
         view = QChartView(chart)
         view.setRenderHint(QPainter.Antialiasing)
         return view
+
+    def _make_legend(
+        self,
+        slices: list[tuple[str, Decimal]],
+        total: Decimal,
+        split: dict[str, dict[str, Decimal]],
+    ) -> QScrollArea:
+        panel = QWidget()
+        panel.setAutoFillBackground(True)
+        column = QVBoxLayout(panel)
+        column.setContentsMargins(8, 4, 8, 4)
+        column.setSpacing(10)
+
+        for category, amount in slices:
+            percent = (amount / total * 100) if total else Decimal("0")
+            per_user = split.get(category, {})
+            boris = per_user.get(USER_BORIS, Decimal("0"))
+            milena = per_user.get(USER_MILENA, Decimal("0"))
+            column.addWidget(
+                _LegendRow(
+                    color=chart_color_for(category),
+                    title=f"{category}  {format_amount(amount)}  ({percent:.1f}%)",
+                    split=(
+                        f"{USER_BORIS} {format_amount(boris)}  ·  "
+                        f"{USER_MILENA} {format_amount(milena)}"
+                    ),
+                )
+            )
+        column.addStretch(1)
+
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setWidget(panel)
+        scroll.viewport().setAutoFillBackground(False)
+        scroll.setMinimumWidth(280)
+        scroll.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Expanding)
+        return scroll
+
+
+class _LegendRow(QWidget):
+    """One pie-legend entry: colour chip, category line, Boris/Milena split."""
+
+    def __init__(self, color: str, title: str, split: str, parent=None) -> None:
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(8)
+
+        swatch = QLabel()
+        swatch.setFixedSize(12, 12)
+        swatch.setStyleSheet(
+            f"background-color: {color}; border: 1px solid rgba(0, 0, 0, 40%);"
+        )
+        row.addWidget(swatch, 0, Qt.AlignTop)
+
+        text = QVBoxLayout()
+        text.setContentsMargins(0, 0, 0, 0)
+        text.setSpacing(2)
+        title_label = QLabel(title)
+        title_label.setWordWrap(True)
+        split_label = QLabel(split)
+        split_label.setWordWrap(True)
+        muted = _muted_text_color(split_label)
+        split_label.setStyleSheet(f"color: {muted.name()};")
+        text.addWidget(title_label)
+        text.addWidget(split_label)
+        row.addLayout(text, 1)

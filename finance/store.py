@@ -276,6 +276,23 @@ class FinanceStore:
             totals[category] = totals.get(category, Decimal("0")) + record.amount
         return sorted(totals.items(), key=lambda item: (-item[1], item[0]))
 
+    def spending_split_by_category(
+        self, start: date, end: date
+    ) -> dict[str, dict[str, Decimal]]:
+        """Per-category spending broken down by person.
+
+        Returns `{category: {user: amount}}` for the period. Users with no
+        spending in a category are omitted from that category's dict.
+        """
+        split: dict[str, dict[str, Decimal]] = {}
+        for record in self.spending_between(start, end, user=None):
+            category = record.category or "Uncategorized"
+            per_user = split.setdefault(category, {})
+            per_user[record.user] = (
+                per_user.get(record.user, Decimal("0")) + record.amount
+            )
+        return split
+
     def total_earned(
         self, start: date, end: date, user: Optional[str] = None
     ) -> Decimal:

@@ -59,6 +59,12 @@ CHART_COLORS: list[str] = [
     "#F1CE63",  # gold
 ]
 
+# Colour of the Boris / Milena split line under each pie-chart legend entry.
+# Leave empty to pick a muted colour from the current theme (readable on both
+# light and dark windows). A fixed hex like "#1c1c1c" is nearly black and
+# vanishes on a dark background.
+CHART_SPLIT_LABEL_COLOR = ""
+
 # The two people who use the app. Stored on every record as `user`.
 USERS: tuple[str, ...] = ("Boris", "Milena")
 USER_BORIS = USERS[0]
