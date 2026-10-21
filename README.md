@@ -38,6 +38,8 @@ FinanceTracker/
 ├── main.py               # launches the GUI
 ├── cli.py                # tiny command-line client (proves the API is reusable)
 ├── lib_requirements.txt  # Python dependencies (PySide6)
+├── requirements-dev.txt  # development dependencies (pytest)
+├── tests/                # finance-core tests; synthetic data only
 └── finance_data.json     # created on first save, next to the program; not in Git
 ```
 
@@ -74,6 +76,17 @@ pip install -r lib_requirements.txt
 ```bash
 python main.py
 ```
+
+## Run the tests
+
+From the project root, with the virtual environment activated:
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+The tests exercise the finance core with synthetic records in a temporary directory. They do not read or write `finance_data.json`.
 
 ## Use the CLI (optional)
 

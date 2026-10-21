@@ -1,0 +1,5 @@
+# Development-only. Runtime dependencies stay in lib_requirements.txt.
+# From the project root, with the virtual environment activated:
+#   pip install -r requirements-dev.txt
+#   python -m pytest
+pytest>=8.4

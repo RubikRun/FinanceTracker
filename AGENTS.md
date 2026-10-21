@@ -293,7 +293,17 @@ FinanceTracker/
 │   ├── FinanceTracker_SecureSync_CLI_ImplementationPlan.md
 │   └── FinanceTracker_SecureSync_ImplementationPlan.md
 ├── prompt0001.txt                 # original product prompt
+├── pytest.ini                     # `python -m pytest` configuration
+├── requirements-dev.txt           # development dependencies (pytest)
 ├── run.bat                        # Windows convenience launcher
+├── tests/                         # core tests; synthetic data only
+│   ├── __init__.py
+│   ├── conftest.py
+│   ├── support.py
+│   ├── test_models.py
+│   ├── test_store_mutations.py
+│   ├── test_store_persistence.py
+│   └── test_store_queries.py
 ├── todo.txt                       # informal feature/task history
 ├── ui/
 │   ├── __init__.py
@@ -303,7 +313,7 @@ FinanceTracker/
 └── v0.0_requirements.txt          # original detailed v0 requirements
 ```
 
-There are no automated tests, packaging metadata, lock file, CI configuration, formal migration scripts, or generated installer in the repository.
+Core behavior is covered by `python -m pytest` (see `tests/`). There is still no packaging metadata, lock file, CI configuration, formal migration scripts, or generated installer in the repository.
 
 ### 5.1 `main.py`
 
@@ -477,7 +487,7 @@ QtCharts is imported from the PySide6 distribution; there is no separate chartin
 
 ### 6.3 Dependency file
 
-Runtime dependencies are listed in `lib_requirements.txt`. There is no `requirements.txt`. README setup uses the same file:
+Runtime dependencies are listed in `lib_requirements.txt`. There is no `requirements.txt`. Development-only test dependencies are in `requirements-dev.txt` (`pytest`). README setup uses the runtime file:
 
 ```bash
 pip install -r lib_requirements.txt
@@ -1082,9 +1092,9 @@ Notes may contain sensitive context in addition to amounts. Git ignore prevents 
 
 Keeping data beside source is convenient during development. It can fail if the application is later installed under a read-only system directory or packaged in a read-only bundle. A packaged version should use an operating-system user-data directory or an explicit configurable path.
 
-### 12.11 No test suite
+### 12.11 Automated tests cover the finance core
 
-There are no automated unit, integration, persistence, migration, or UI tests. The architecture is testable, especially the core, but regressions currently depend on manual discovery.
+`tests/` covers model serialization, atomic local persistence, mutations, and queries with synthetic data. Run them from the project root with `python -m pytest` after `pip install -r requirements-dev.txt`. They never read `finance_data.json`. There are no UI, migration, or end-to-end tests, so those regressions still depend on manual discovery.
 
 ### 12.12 Documentation drift
 
@@ -1312,7 +1322,7 @@ The ignored private file is production data for this project, even though the ap
 
 ## 16. Recommended test strategy
 
-No tests currently exist. A compact high-value suite would focus first on the core.
+Core model, persistence, mutation, and query tests live in `tests/` and run with `python -m pytest` after `pip install -r requirements-dev.txt`. They use synthetic records and temporary directories, never `finance_data.json`. Items in 16.1–16.4 are covered there, except schema migration and core positive-amount enforcement, which are not implemented. GUI and cross-platform checks in 16.5–16.6 are still manual.
 
 ### 16.1 Model tests
 
@@ -1378,7 +1388,7 @@ For this private app, likely high-value improvements are:
 1. Add automatic, timestamped backups before save or migration.
 2. Add friendly load/save error dialogs.
 3. Move amount invariants into the core.
-4. Add core unit tests.
+4. Extend automated tests when GUI or migration behavior changes. The finance core is covered by `python -m pytest`.
 5. Check schema versions and implement migrations.
 6. Detect a data file changed since it was loaded.
 7. Correct setup documentation/dependency naming.
@@ -1405,8 +1415,8 @@ These are recommendations, not existing commitments. They should be weighed agai
 - Combined mode prevents adding but still allows editing and deletion.
 - User ownership and recording date survive edits and type conversions.
 - Categories are fixed in the GUI but loose in storage/core/CLI.
-- The dependency file is `lib_requirements.txt`.
-- There are no automated tests, packaging metadata, CI, installer, or application-level backups.
+- The runtime dependency file is `lib_requirements.txt`. Development tests use `requirements-dev.txt`.
+- Finance-core tests run with `python -m pytest`. There is no packaging metadata, CI, installer, or application-level backups.
 - Private transaction contents should not be copied into prompts, documentation, tests, or commits.
 
 This document describes current behavior rather than declaring every behavior ideal. When source, README, TODO text, and historical requirements disagree, current source code is the operational authority; explicit new decisions from Boris and Milena should be the product authority.
