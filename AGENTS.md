@@ -303,7 +303,8 @@ FinanceTracker/
 │   ├── test_models.py
 │   ├── test_store_mutations.py
 │   ├── test_store_persistence.py
-│   └── test_store_queries.py
+│   ├── test_store_queries.py
+│   └── test_store_serialization.py
 ├── todo.txt                       # informal feature/task history
 ├── ui/
 │   ├── __init__.py
@@ -402,7 +403,7 @@ The module validates that a loaded `user` is one of the configured `USERS`. It d
 - In-memory spending and income lists.
 - The target file path.
 - The next global record ID.
-- Loading and saving.
+- Loading and saving, plus in-memory canonical JSON bytes (`to_json_bytes` / `from_json_bytes`) that do not touch the data file.
 - Add, lookup, update/convert, and delete operations.
 - Date-range and user filtering.
 - Totals, gap, category aggregation, per-person category splits, and available months.
@@ -664,10 +665,12 @@ The application displays two decimal places but does not restrict input to two d
 `FinanceStore.load(path)`:
 
 1. Returns an empty store if the path does not exist.
-2. Parses the complete UTF-8 JSON document.
+2. Reads the file bytes and parses them with `from_json_bytes`. That method does not read or write its path argument, so the same parse works for an in-memory document.
 3. Uses `Decimal` for JSON fractional numbers.
 4. Converts each dictionary through the relevant dataclass `from_dict`.
 5. Loads `next_id`, or computes it only when absent.
+
+`from_json_bytes` accepts both `\n` and `\r\n` newlines.
 
 Malformed JSON, invalid dates, missing mandatory fields, unknown users, permission failures, and other errors are not caught. They propagate and can prevent the GUI from opening or make the CLI exit with a traceback.
 
@@ -678,12 +681,14 @@ The loader does not inspect the `version` field. `DATA_VERSION = 2` currently de
 `FinanceStore.save()` rewrites the entire data set:
 
 ```text
-build complete payload
+to_json_bytes()  (canonical UTF-8, `\n` newlines)
   -> create temp file in destination directory
-  -> write indented UTF-8 JSON
+  -> write that text in text mode
   -> atomically replace finance_data.json
   -> clean up leftover temp file if necessary
 ```
+
+`to_json_bytes()` is the canonical document: stable key order, `indent=2`, `ensure_ascii=False`, the same numeric encoding as before, and `\n` newlines on every platform. `save()` writes those characters in text mode, so a Windows file contains CRLF while the in-memory bytes stay LF. Snapshot comparisons must use `to_json_bytes()`, not the raw on-disk file.
 
 `os.replace` provides an atomic final rename on Windows and macOS when used on the same filesystem. Creating the temporary file in the destination directory is what makes that same-filesystem replacement likely.
 
@@ -757,10 +762,12 @@ Returns the first and last date of a calendar month, inclusive. Invalid month/ye
 ```python
 FinanceStore(path, spending=None, income=None, next_id=1)
 FinanceStore.load(path) -> FinanceStore
+FinanceStore.from_json_bytes(payload, path) -> FinanceStore
+store.to_json_bytes() -> bytes
 store.save() -> None
 ```
 
-The constructor can be useful in tests or scripts. `load` is the normal production path.
+The constructor can be useful in tests or scripts. `load` / `save` are the file-backed paths the GUI and CLI use. `to_json_bytes` and `from_json_bytes` convert the same document without creating a file. `path` passed to `from_json_bytes` is only remembered for a later `save`.
 
 ### 9.3 Add operations
 
@@ -1408,6 +1415,7 @@ These are recommendations, not existing commitments. They should be weighed agai
 - The JSON schema is version 2 and requires a `user` on every record.
 - There is no functioning migration framework despite the version field.
 - Money is `Decimal` in memory but fractional values are converted through float for JSON output.
+- `to_json_bytes()` / `from_json_bytes()` convert the schema-v2 document in memory. Those bytes use `\n`. `save()` writes them in text mode, so the on-disk file uses the platform newline.
 - Saves use a same-directory temporary file plus atomic replacement.
 - Saves rewrite the whole file and are not safe for concurrent writers.
 - GUI mutations explicitly save; store mutations alone do not.

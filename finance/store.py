@@ -36,7 +36,12 @@ def _matches_user(record_user: str, user: Optional[str]) -> bool:
 
 
 class FinanceStore:
-    """In-memory collection of records backed by a single JSON file."""
+    """In-memory spending and income records with optional JSON persistence.
+
+    `to_json_bytes` and `from_json_bytes` convert the schema-v2 document
+    without touching disk. `load` and `save` are the file-backed wrappers
+    the GUI and CLI use.
+    """
 
     def __init__(
         self,
@@ -53,35 +58,59 @@ class FinanceStore:
     # ------------------------------------------------------------------ #
     # Persistence
     # ------------------------------------------------------------------ #
+    def to_json_bytes(self) -> bytes:
+        """Return the canonical UTF-8 JSON document for this store.
+
+        Key order, two-space indent, and `ensure_ascii=False` match `save`.
+        Whole amounts are JSON integers and fractional amounts are JSON
+        numbers. Newlines in these bytes are LF on every platform so two
+        machines produce the same plaintext. `save` writes that text in text
+        mode, so the file on disk may use the platform newline instead.
+
+        Does not read or write `self.path`.
+        """
+        payload = {
+            "version": DATA_VERSION,
+            "next_id": self._next_id,
+            "spending": [record.to_dict() for record in self.spending],
+            "income": [record.to_dict() for record in self.income],
+        }
+        return json.dumps(payload, indent=2, ensure_ascii=False).encode("utf-8")
+
+    @classmethod
+    def from_json_bytes(cls, payload: bytes, path: PathLike) -> "FinanceStore":
+        """Build a store from a UTF-8 JSON document.
+
+        `path` is remembered for a later `save` and is not read or written.
+        Both LF and CRLF newlines are accepted. A missing `next_id` is
+        chosen the same way as `load`. Fractional JSON numbers become
+        `Decimal`.
+        """
+        # parse_float=Decimal keeps amounts exact instead of going via float.
+        data = json.loads(payload.decode("utf-8"), parse_float=Decimal)
+        spending = [SpendingRecord.from_dict(item) for item in data.get("spending", [])]
+        income = [IncomeRecord.from_dict(item) for item in data.get("income", [])]
+        next_id = int(data.get("next_id", cls._compute_next_id(spending, income)))
+        return cls(path, spending, income, next_id)
+
     @classmethod
     def load(cls, path: PathLike) -> "FinanceStore":
         """Load a store from `path`. A missing file yields an empty store."""
         path = Path(path)
         if not path.exists():
             return cls(path)
-
-        with path.open("r", encoding="utf-8") as f:
-            # parse_float=Decimal keeps amounts exact instead of going via float.
-            data = json.load(f, parse_float=Decimal)
-
-        spending = [SpendingRecord.from_dict(d) for d in data.get("spending", [])]
-        income = [IncomeRecord.from_dict(d) for d in data.get("income", [])]
-        next_id = int(data.get("next_id", cls._compute_next_id(spending, income)))
-        return cls(path, spending, income, next_id)
+        return cls.from_json_bytes(path.read_bytes(), path)
 
     def save(self) -> None:
         """Write the store to disk atomically (temp file + replace)."""
-        payload = {
-            "version": DATA_VERSION,
-            "next_id": self._next_id,
-            "spending": [r.to_dict() for r in self.spending],
-            "income": [r.to_dict() for r in self.income],
-        }
+        text = self.to_json_bytes().decode("utf-8")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(self.path.parent), suffix=".tmp")
         try:
+            # Text mode translates `\n` to the platform newline. The canonical
+            # bytes from `to_json_bytes` stay `\n` either way.
             with os.fdopen(fd, "w", encoding="utf-8") as f:
-                json.dump(payload, f, indent=2, ensure_ascii=False)
+                f.write(text)
             os.replace(tmp, self.path)  # atomic on Windows and macOS
         finally:
             if os.path.exists(tmp):
