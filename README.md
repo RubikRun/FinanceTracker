@@ -29,6 +29,7 @@ Amounts are shown in euro (€). Dates are shown as `DD/MM/YYYY` and stored as
 FinanceTracker/
 ├── finance/              # UI-independent core API (no Qt here)
 │   ├── config.py         #   categories, currency, date formats, file path
+│   ├── crypto.py         #   snapshot envelope; not used by the GUI yet
 │   ├── models.py         #   SpendingRecord, IncomeRecord
 │   └── store.py          #   FinanceStore: load/save JSON + all queries
 ├── ui/                   # Qt (PySide6) UI — a thin client over `finance`
@@ -37,7 +38,7 @@ FinanceTracker/
 │   └── spending_chart_dialog.py  # category pie chart and legend
 ├── main.py               # launches the GUI
 ├── cli.py                # tiny command-line client (proves the API is reusable)
-├── lib_requirements.txt  # Python dependencies (PySide6)
+├── lib_requirements.txt  # Python dependencies (PySide6, cryptography)
 ├── requirements-dev.txt  # development dependencies (pytest)
 ├── tests/                # finance-core tests; synthetic data only
 └── finance_data.json     # created on first save, next to the program; not in Git
@@ -86,7 +87,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-The tests exercise the finance core with synthetic records in a temporary directory. They do not read or write `finance_data.json`.
+The tests exercise the finance core and snapshot encryption with synthetic data. They do not read or write `finance_data.json`, and they do not contact Google Drive.
 
 ## Use the CLI (optional)
 

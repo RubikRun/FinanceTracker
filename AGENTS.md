@@ -284,10 +284,11 @@ FinanceTracker/
 ├── finance/
 │   ├── __init__.py                # public core exports
 │   ├── config.py                  # people, categories, formats, chart colors, data path
+│   ├── crypto.py                  # AES-256-GCM snapshot envelope; not used by the GUI yet
 │   ├── models.py                  # SpendingRecord and IncomeRecord serialization
 │   └── store.py                   # persistence, mutations, and all queries
 ├── finance_data.json              # private runtime data; ignored by Git
-├── lib_requirements.txt           # PySide6 dependency
+├── lib_requirements.txt           # PySide6 and cryptography
 ├── main.py                        # GUI entrypoint
 ├── planning/
 │   ├── FinanceTracker_SecureSync_CLI_ImplementationPlan.md
@@ -300,6 +301,7 @@ FinanceTracker/
 │   ├── __init__.py
 │   ├── conftest.py
 │   ├── support.py
+│   ├── test_crypto.py
 │   ├── test_models.py
 │   ├── test_store_mutations.py
 │   ├── test_store_persistence.py
@@ -474,17 +476,20 @@ Important standard-library modules include:
 - `pathlib` for paths.
 - `tempfile` and `os.replace` for atomic saves.
 
-### 6.2 GUI framework
+### 6.2 Runtime libraries
 
-The only third-party dependency declared by the project is:
+The runtime third-party dependencies are PySide6 and `cryptography`:
 
 ```text
 PySide6>=6.10
+cryptography>=50
 ```
 
 PySide6 6.10+ was selected because the dependency comment says older releases do not support Python 3.14. The inspected environment uses PySide6 6.11.1.
 
 QtCharts is imported from the PySide6 distribution; there is no separate charting dependency.
+
+`cryptography` 50.0.2 was installed and imported on Python 3.14.3. `finance/crypto.py` uses it for AES-256-GCM and scrypt. The GUI and CLI do not call that module yet. The envelope layout and the scrypt cost (N=2**16, r=8, p=1) are documented in the module.
 
 ### 6.3 Dependency file
 
@@ -1416,6 +1421,7 @@ These are recommendations, not existing commitments. They should be weighed agai
 - There is no functioning migration framework despite the version field.
 - Money is `Decimal` in memory but fractional values are converted through float for JSON output.
 - `to_json_bytes()` / `from_json_bytes()` convert the schema-v2 document in memory. Those bytes use `\n`. `save()` writes them in text mode, so the on-disk file uses the platform newline.
+- `finance/crypto.py` encrypts snapshot bytes with AES-256-GCM and scrypt (N=2**16, r=8, p=1). The GUI does not use it yet. `read_unverified_metadata` does not check the authentication tag; `decrypt` does.
 - Saves use a same-directory temporary file plus atomic replacement.
 - Saves rewrite the whole file and are not safe for concurrent writers.
 - GUI mutations explicitly save; store mutations alone do not.
