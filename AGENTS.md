@@ -2,7 +2,7 @@
 
 > Self-contained handoff document for humans and AI assistants that do not have access to the repository.
 >
-> Repository state documented: commit `1c63c72a5c075bb22a4b7c1c8d3dffa9450c9ad7` (`In spending chart below each category show how much each person spent`), inspected on 2026-10-13. The private contents of `finance_data.json` are deliberately not reproduced here.
+> Repository state documented: product source matches commit `1c63c72a5c075bb22a4b7c1c8d3dffa9450c9ad7` (`In spending chart below each category show how much each person spent`), inspected on 2026-10-13. This handoff file is `AGENTS.md`. The `planning/` directory was added in later documentation commits. The private contents of `finance_data.json` are deliberately not reproduced here.
 
 ## 1. Executive summary
 
@@ -278,8 +278,8 @@ This boundary should be preserved in future changes. Business rules and reusable
 ```text
 FinanceTracker/
 ├── .gitignore
+├── AGENTS.md                      # this handoff document
 ├── README.md
-├── FinanceTracker.md              # this handoff document
 ├── cli.py                         # command-line entrypoint
 ├── finance/
 │   ├── __init__.py                # public core exports
@@ -289,6 +289,9 @@ FinanceTracker/
 ├── finance_data.json              # private runtime data; ignored by Git
 ├── lib_requirements.txt           # PySide6 dependency
 ├── main.py                        # GUI entrypoint
+├── planning/
+│   ├── FinanceTracker_SecureSync_CLI_ImplementationPlan.md
+│   └── FinanceTracker_SecureSync_ImplementationPlan.md
 ├── prompt0001.txt                 # original product prompt
 ├── run.bat                        # Windows convenience launcher
 ├── todo.txt                       # informal feature/task history
@@ -472,17 +475,13 @@ PySide6 6.10+ was selected because the dependency comment says older releases do
 
 QtCharts is imported from the PySide6 distribution; there is no separate charting dependency.
 
-### 6.3 Dependency-file mismatch
+### 6.3 Dependency file
 
-The repository contains `lib_requirements.txt`, but `README.md` tells the user to install `requirements.txt`. There is no tracked `requirements.txt`.
-
-The command that matches the actual repository is:
+Runtime dependencies are listed in `lib_requirements.txt`. There is no `requirements.txt`. README setup uses the same file:
 
 ```bash
 pip install -r lib_requirements.txt
 ```
-
-Until the filename or README is corrected, an AI or developer should not blindly copy the README installation command.
 
 ### 6.4 Setup and launch
 
@@ -689,7 +688,7 @@ This protects against many partial-write/corruption cases, but it is not a backu
 
 ### 8.3 Concurrency and sharing warning
 
-The README suggests pointing both machines at a Dropbox, iCloud, or OneDrive file. That can be convenient, but the application is not safe for simultaneous editing.
+The data file path comes from `default_data_path()` in `finance/config.py`. Pointing two computers at one shared copy of that file is not safe for simultaneous editing.
 
 Each process:
 
@@ -1089,11 +1088,8 @@ There are no automated unit, integration, persistence, migration, or UI tests. T
 
 ### 12.12 Documentation drift
 
-Known examples:
+Known example:
 
-- README names `requirements.txt`; the actual file is `lib_requirements.txt`.
-- README’s project tree does not list the chart dialog.
-- README still labels the project v0.0 despite later features.
 - `todo.txt` still asks for a larger chart window after a commit already widened it.
 
 Repository documentation should be checked against source before using it as authoritative.
@@ -1409,7 +1405,7 @@ These are recommendations, not existing commitments. They should be weighed agai
 - Combined mode prevents adding but still allows editing and deletion.
 - User ownership and recording date survive edits and type conversions.
 - Categories are fixed in the GUI but loose in storage/core/CLI.
-- The current actual dependency file is `lib_requirements.txt`, despite README saying `requirements.txt`.
+- The dependency file is `lib_requirements.txt`.
 - There are no automated tests, packaging metadata, CI, installer, or application-level backups.
 - Private transaction contents should not be copied into prompts, documentation, tests, or commits.
 

@@ -1,10 +1,8 @@
 # Finance Tracker
 
-A small, cross-platform (Windows + macOS) desktop app for tracking personal
-income and spending, built with Python and Qt (PySide6). Data lives in a single
-hand-editable JSON file — no database.
-
-This is **v0.0**: the bare-minimum version.
+A small, cross-platform (Windows + macOS) desktop app for tracking Boris and
+Milena's household income and spending, built with Python and Qt (PySide6).
+Data lives in a single hand-editable JSON file — no database.
 
 ## What it does
 
@@ -18,6 +16,9 @@ This is **v0.0**: the bare-minimum version.
   - an **Income** table (date, amount, note; plus **Who** in the combined view),
   - totals: **Earned**, **Spent**, and the **Gap** (earned − spent; green when
     positive, red when negative).
+- Open a **Spending chart** for a month: a pie chart by category, with Boris's
+  and Milena's amounts under each category. The chart can change person and
+  month on its own, without changing the main window.
 
 Amounts are shown in euro (€). Dates are shown as `DD/MM/YYYY` and stored as
 `YYYY-MM-DD` in the JSON file.
@@ -31,12 +32,13 @@ FinanceTracker/
 │   ├── models.py         #   SpendingRecord, IncomeRecord
 │   └── store.py          #   FinanceStore: load/save JSON + all queries
 ├── ui/                   # Qt (PySide6) UI — a thin client over `finance`
-│   ├── add_dialog.py     #   modal "Add record" dialog
-│   └── main_window.py    #   main window: period selector, summary, tables
+│   ├── add_dialog.py     #   modal add/edit dialog
+│   ├── main_window.py    #   main window: period selector, summary, tables
+│   └── spending_chart_dialog.py  # category pie chart and legend
 ├── main.py               # launches the GUI
 ├── cli.py                # tiny command-line client (proves the API is reusable)
-├── requirements.txt
-└── finance_data.json     # created on first save, next to the program
+├── lib_requirements.txt  # Python dependencies (PySide6)
+└── finance_data.json     # created on first save, next to the program; not in Git
 ```
 
 The UI and the CLI both talk only to `finance.FinanceStore`, never to the JSON
@@ -55,7 +57,7 @@ It's recommended to use a virtual environment.
 cd C:\dev\FinanceTracker
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
+pip install -r lib_requirements.txt
 ```
 
 ### macOS (Terminal)
@@ -64,7 +66,7 @@ pip install -r requirements.txt
 cd /path/to/FinanceTracker
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r requirements.txt
+pip install -r lib_requirements.txt
 ```
 
 ## Run the app
@@ -78,7 +80,7 @@ python main.py
 The CLI reads/writes the same `finance_data.json`:
 
 ```bash
-python cli.py add-spending Boris 14.20 Food 2026-06-11 --note "toilet paper"
+python cli.py add-spending Boris 14.20 Groceries 2026-06-11 --note "toilet paper"
 python cli.py add-income Milena 3560 2026-06-03
 python cli.py summary 2026 6
 python cli.py summary 2026 6 --user Boris
@@ -95,7 +97,7 @@ record. It is plain JSON and safe to edit by hand. Example:
   "version": 2,
   "next_id": 3,
   "spending": [
-    { "id": 1, "amount": 14.2, "category": "Food", "date": "2026-06-11", "date_recorded": "2026-06-11", "user": "Boris", "note": "toilet paper" }
+    { "id": 1, "amount": 14.2, "category": "Groceries", "date": "2026-06-11", "date_recorded": "2026-06-11", "user": "Boris", "note": "toilet paper" }
   ],
   "income": [
     { "id": 2, "amount": 3560, "date": "2026-06-03", "date_recorded": "2026-06-13", "user": "Milena", "note": "" }
@@ -106,9 +108,10 @@ record. It is plain JSON and safe to edit by hand. Example:
 IDs are a single shared sequence across both income and spending. Every record
 has a `user` field (`Boris` or `Milena`).
 
-To share data between two machines, point both at the same file by editing
-`DATA_FILENAME` / `default_data_path()` in `finance/config.py` (e.g. to a
-Dropbox/iCloud/OneDrive folder).
+The file path is `default_data_path()` in `finance/config.py`. Keep the app
+closed on one computer before opening it on the other: each save replaces the
+whole file, so overlapping saves drop whichever copy saves last. Secure sync
+between the two computers is not part of this version.
 
 ## Changing categories, currency or people
 
