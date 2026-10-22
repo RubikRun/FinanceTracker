@@ -285,10 +285,14 @@ FinanceTracker/
 │   ├── __init__.py                # public core exports
 │   ├── config.py                  # people, categories, formats, chart colors, data path
 │   ├── crypto.py                  # AES-256-GCM snapshot envelope; not used by the GUI yet
+│   ├── profile.py                 # per-user config dir; cloud mode stays off
+│   ├── google_auth.py             # Google sign-in; refresh token in the OS keyring
+│   ├── drive_folder.py            # folder link parsing and shortcut resolution
+│   ├── google_setup.py            # `python -m finance.google_setup`; uploads nothing
 │   ├── models.py                  # SpendingRecord and IncomeRecord serialization
 │   └── store.py                   # persistence, mutations, and all queries
 ├── finance_data.json              # private runtime data; ignored by Git
-├── lib_requirements.txt           # PySide6 and cryptography
+├── lib_requirements.txt           # PySide6, cryptography, Google API, keyring, platformdirs
 ├── main.py                        # GUI entrypoint
 ├── planning/
 │   ├── FinanceTracker_SecureSync_CLI_ImplementationPlan.md
@@ -302,7 +306,12 @@ FinanceTracker/
 │   ├── conftest.py
 │   ├── support.py
 │   ├── test_crypto.py
+│   ├── test_drive_folder.py
+│   ├── test_google_auth.py
+│   ├── test_google_setup.py
 │   ├── test_models.py
+│   ├── test_profile.py
+│   ├── test_runtime_imports.py
 │   ├── test_store_mutations.py
 │   ├── test_store_persistence.py
 │   ├── test_store_queries.py
@@ -457,6 +466,14 @@ It uses `PySide6.QtCharts`:
 
 The custom legend was chosen instead of Qt’s built-in legend so each category can have a second, muted Boris/Milena breakdown line.
 
+### 5.9 Per-user config and Google sign-in
+
+These modules are not used by the GUI or the CLI. `python -m finance.google_setup` is the only entry point. It stores a Google refresh token in the OS credential store and, after the user confirms the folder name and owner, saves that folder's Drive id. It does not upload finance data. `cloud_mode` in the local config stays false until a later step has both a verified generation-1 snapshot and the permanent lock file.
+
+`FINANCETRACKER_CONFIG_DIR`, when set, is the profile directory for config, the OAuth client file, the local encrypted-snapshot directory, the process-lock path, and the known-valid cache. The keyring service name becomes `FinanceTracker-profile-` plus a hash of that directory. When the variable is unset, the directory is the platform user-config location (`%LOCALAPPDATA%\FinanceTracker` on Windows, `~/Library/Application Support/FinanceTracker` on macOS) and the keyring service name is `FinanceTracker`.
+
+The OAuth scope is `https://www.googleapis.com/auth/drive`. Only the refresh token is stored. A plaintext token file is not written. Tests set the config-directory variable and pass a fake keyring; they do not touch the production credential slot.
+
 ## 6. Technology and runtime
 
 ### 6.1 Language and standard library
@@ -478,11 +495,18 @@ Important standard-library modules include:
 
 ### 6.2 Runtime libraries
 
-The runtime third-party dependencies are PySide6 and `cryptography`:
+The runtime third-party dependencies are PySide6, `cryptography`, the Google Drive API client, `keyring`, and `platformdirs`:
 
 ```text
 PySide6>=6.10
 cryptography>=50
+google-api-python-client>=2.201
+google-auth>=2.62
+google-auth-oauthlib>=1.5
+google-auth-httplib2>=0.4
+httplib2>=0.32
+keyring>=25.7
+platformdirs>=4.13
 ```
 
 PySide6 6.10+ was selected because the dependency comment says older releases do not support Python 3.14. The inspected environment uses PySide6 6.11.1.
@@ -490,6 +514,8 @@ PySide6 6.10+ was selected because the dependency comment says older releases do
 QtCharts is imported from the PySide6 distribution; there is no separate charting dependency.
 
 `cryptography` 50.0.2 was installed and imported on Python 3.14.3. `finance/crypto.py` uses it for AES-256-GCM and scrypt. The GUI and CLI do not call that module yet. The envelope layout and the scrypt cost (N=2**16, r=8, p=1) are documented in the module.
+
+These were imported on Python 3.14.3 as well: `google-api-python-client` 2.201.0, `google-auth` 2.62.0, `google-auth-oauthlib` 1.5.0, `google-auth-httplib2` 0.4.4, `keyring` 25.7.0 (`WinVaultKeyring`), and `platformdirs` 4.13.5. The GUI does not call them yet. `python -m finance.google_setup` does.
 
 ### 6.3 Dependency file
 
@@ -734,19 +760,21 @@ Current protections:
 
 - The file is excluded by `.gitignore`.
 - `*.tmp` files are also ignored.
-- The application does not transmit telemetry or send data to a server.
+- The application does not transmit telemetry. The GUI and CLI do not contact Google. `python -m finance.google_setup` does, and only when someone runs it.
 
-Not provided:
+Not provided by the running app yet:
 
-- Encryption at rest.
-- Authentication.
+- Encryption of `finance_data.json` at rest. Snapshot encryption exists and is unused by the GUI.
+- Authentication for the finance window.
 - Per-user access control.
-- Secure secret storage.
+- The finance passphrase is not stored. A Google refresh token can be stored in the OS credential store by the setup command; the window does not use it yet.
 - Redaction of notes.
 - Automatic backups.
 - Audit logging.
 
-Operating-system permissions, device security, disk encryption, and any cloud provider’s security are therefore the real protection boundary.
+`finance.profile` can keep a Drive folder id and a machine id outside the source tree. That file is not finance data. Cloud mode is not on.
+
+Operating-system permissions, device security, disk encryption, and any cloud provider’s security are therefore still the protection boundary for `finance_data.json`.
 
 The repository’s original requirements mention encryption only as a possible future direction, with the acknowledged trade-off that encrypted data would no longer be directly hand-editable.
 
@@ -1334,7 +1362,7 @@ The ignored private file is production data for this project, even though the ap
 
 ## 16. Recommended test strategy
 
-Core model, persistence, mutation, and query tests live in `tests/` and run with `python -m pytest` after `pip install -r requirements-dev.txt`. They use synthetic records and temporary directories, never `finance_data.json`. Items in 16.1–16.4 are covered there, except schema migration and core positive-amount enforcement, which are not implemented. GUI and cross-platform checks in 16.5–16.6 are still manual.
+Core model, persistence, mutation, query, encryption, profile, and Google sign-in tests live in `tests/` and run with `python -m pytest` after `pip install -r requirements-dev.txt`. They use synthetic records and temporary directories, never `finance_data.json`. An autouse fixture sets `FINANCETRACKER_CONFIG_DIR` to a temporary directory, and OAuth tests pass a fake keyring. They do not contact Google. Items in 16.1–16.4 are covered there, except schema migration and core positive-amount enforcement, which are not implemented. GUI and cross-platform checks in 16.5–16.6 are still manual. The Google Cloud consent-screen test in the README is manual.
 
 ### 16.1 Model tests
 
@@ -1422,6 +1450,9 @@ These are recommendations, not existing commitments. They should be weighed agai
 - Money is `Decimal` in memory but fractional values are converted through float for JSON output.
 - `to_json_bytes()` / `from_json_bytes()` convert the schema-v2 document in memory. Those bytes use `\n`. `save()` writes them in text mode, so the on-disk file uses the platform newline.
 - `finance/crypto.py` encrypts snapshot bytes with AES-256-GCM and scrypt (N=2**16, r=8, p=1). The GUI does not use it yet. `read_unverified_metadata` does not check the authentication tag; `decrypt` does.
+- `python -m finance.google_setup` stores only a Google refresh token in the OS credential store and can save a confirmed Drive folder id. It does not upload finance data. `cloud_mode` stays false. The GUI and CLI do not call this yet.
+- `FINANCETRACKER_CONFIG_DIR`, when set, is the whole per-user profile (config, OAuth client file, local encrypted copies, process lock, known-valid cache) and selects a non-production keyring service name. Unset, the profile is the platform user-config directory.
+- The OAuth scope prepared here is `https://www.googleapis.com/auth/drive`. There is no plaintext token file.
 - Saves use a same-directory temporary file plus atomic replacement.
 - Saves rewrite the whole file and are not safe for concurrent writers.
 - GUI mutations explicitly save; store mutations alone do not.

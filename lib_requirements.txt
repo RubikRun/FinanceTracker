@@ -1,4 +1,17 @@
 # PySide6 6.10+ is required for Python 3.14 support (older versions cap at 3.13).
 PySide6>=6.10
-# AES-256-GCM and scrypt. 50.0.2 was verified on Python 3.14.
+# AES-256-GCM and scrypt. 50.0.2 was verified on Python 3.14.3.
 cryptography>=50
+# Google Drive API v3. Imported on Python 3.14.3:
+# google-api-python-client 2.201.0, google-auth 2.62.0,
+# google-auth-oauthlib 1.5.0, google-auth-httplib2 0.4.4, httplib2 0.32.0.
+google-api-python-client>=2.201
+google-auth>=2.62
+google-auth-oauthlib>=1.5
+google-auth-httplib2>=0.4
+httplib2>=0.32
+# OS credential store. keyring 25.7.0 (WinVaultKeyring via pywin32-ctypes 0.2.3)
+# was imported on Python 3.14.3.
+keyring>=25.7
+# Per-user config directory. platformdirs 4.13.5 was imported on Python 3.14.3.
+platformdirs>=4.13

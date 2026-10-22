@@ -15,3 +15,10 @@ env/
 Thumbs.db
 .idea/
 .vscode/
+
+# Google OAuth client and tokens. Real copies live in the per-user config
+# directory (or FINANCETRACKER_CONFIG_DIR), never in this repository.
+client_secret*.json
+credentials.json
+token.json
+google_oauth_client.json
