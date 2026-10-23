@@ -34,6 +34,8 @@ FinanceTracker/
 │   ├── google_auth.py    #   Google sign-in; refresh token in the OS keyring
 │   ├── drive_folder.py   #   folder link parsing and shortcut resolution
 │   ├── google_setup.py   #   `python -m finance.google_setup`; uploads nothing
+│   ├── drive_adapter.py  #   Drive folder list/download/upload/trash
+│   ├── drive_check.py    #   `python -m finance.drive_check`; synthetic files only
 │   ├── models.py         #   SpendingRecord, IncomeRecord
 │   └── store.py          #   FinanceStore: load/save JSON + all queries
 ├── ui/                   # Qt (PySide6) UI — a thin client over `finance`
@@ -91,11 +93,11 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-The tests exercise the finance core, snapshot encryption, local config paths, and Google sign-in with fake credentials. They do not read or write `finance_data.json`, and they do not contact Google.
+The tests exercise the finance core, snapshot encryption, local config paths, Google sign-in, and the Drive adapter with fake credentials and a fake Drive service. They do not read or write `finance_data.json`, and they do not contact Google.
 
 ## Google sign-in setup
 
-This prepares a Google sign-in and remembers one shared Drive folder. It does **not** upload finance data, and the FinanceTracker window still uses the local JSON file. Cloud sync is a later step. Do not start the later Drive tests until the checklist below has worked for **both** Google accounts.
+This prepares a Google sign-in and remembers one shared Drive folder. It does **not** upload finance data, and the FinanceTracker window still uses the local JSON file. Cloud sync is not on. Do the sign-in checklist below for **both** Google accounts before the shared-folder check that follows it.
 
 Use a dry-run profile so this experiment does not become the production config. Set this in the same terminal session before the setup command, including when you run it a second time.
 
@@ -183,7 +185,41 @@ The refresh token is stored in the operating-system credential store (Windows Cr
 - In Google Cloud, Audience / the consent screen still says user type **External** and publishing status **In production**.
 - More than 7 days later, run the setup command again. Expected: it still reuses the saved sign-in. A new consent screen means the app is still in Testing.
 
-If either Google account cannot get past the unverified-app warning, stop. The shared-folder Drive tests should not start on a sign-in that did not work.
+If either Google account cannot get past the unverified-app warning, stop. The shared-folder check below should not start on a sign-in that did not work.
+
+## Shared-folder check
+
+This is the check that both Google accounts can use one shared Drive folder. It uploads a few small synthetic files. It does not read the finance file, it does not ask for the finance passphrase, and it does not turn cloud sync on.
+
+Use the same dry-run profile as the sign-in above, still pointed at the empty test folder. Each account needs its own profile: the Windows PC and the Mac each have one, or, on one PC, use a second directory such as `FinanceTracker-dry-run-b` and run `python -m finance.google_setup` there with the other Google account and the same folder link.
+
+The command refuses to run when `FINANCETRACKER_CONFIG_DIR` is unset, and it refuses a profile inside the FinanceTracker source directory.
+
+From the project directory, with the virtual environment active and the dry-run variable still set:
+
+```powershell
+.\.venv\Scripts\python.exe -m finance.drive_check create
+```
+
+```bash
+python -m finance.drive_check partner SNAPSHOT_ID LOCK_ID
+python -m finance.drive_check finish SNAPSHOT_ID LOCK_ID
+python -m finance.drive_check ping
+```
+
+`create` prints the folder name and asks you to type that name. Type it only when it is the empty test folder. If the name is anything else, press Enter without typing it. The command then stops and uploads nothing.
+
+`create` adds `finance_snapshot_g000001_….enc` and `finance_lock.json`. The bytes are markers such as `marker=snapshot-a`. They are not finance records. It prints both file ids.
+
+On the other account, `partner` with those two ids lists the files, downloads the snapshot, changes both files' contents, and tries to trash the snapshot. The trash line should be `not owner — skipped`, and the snapshot should still be in the folder.
+
+Back on the account that ran `create`, `finish` with the same ids reads the updated lock by file id and moves both files to that account's Drive trash. They are not permanently deleted. In the Drive website, the test folder should be empty, both files should be in that account's trash, and nothing outside the test folder should have changed. Leave the folder empty.
+
+`ping` reads the folder and Drive's clock. With the network disconnected first, it should fail within 30 seconds with a message that Drive could not be reached or did not answer. It should not hang. While the network is connected, it prints the folder name and a Drive time in UTC.
+
+`create` always reads the new snapshot back with `files.get`. If the folder listing is slow, it also says the listing had not caught up and the snapshot is still treated as saved. Either sentence is a successful read-back.
+
+If sign-in, sharing, listing, content updates, or read-back by file id fails for either account, stop. Do not continue to snapshot history, the lock, or the finance window on top of that.
 
 ## Use the CLI (optional)
 
@@ -222,8 +258,9 @@ The file path is `default_data_path()` in `finance/config.py`. Keep the app
 closed on one computer before opening it on the other: each save replaces the
 whole file, so overlapping saves drop whichever copy saves last. Sign-in to a
 shared Drive folder can be prepared with `python -m finance.google_setup`
-(see above). That command does not upload finance data. The window still
-saves the local JSON file, and cloud sync is not on yet.
+(see above). That command does not upload finance data. `python -m finance.drive_check`
+uploads synthetic marker files into the test folder only when you run it.
+The window still saves the local JSON file, and cloud sync is not on yet.
 
 ## Changing categories, currency or people
 
