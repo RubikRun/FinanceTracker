@@ -289,6 +289,8 @@ FinanceTracker/
 │   ├── google_auth.py             # Google sign-in; refresh token in the OS keyring
 │   ├── drive_folder.py            # folder link parsing and shortcut resolution
 │   ├── google_setup.py            # `python -m finance.google_setup`; uploads nothing
+│   ├── drive_adapter.py           # one Drive folder; list, download, upload, trash
+│   ├── drive_check.py             # `python -m finance.drive_check`; synthetic files only
 │   ├── models.py                  # SpendingRecord and IncomeRecord serialization
 │   └── store.py                   # persistence, mutations, and all queries
 ├── finance_data.json              # private runtime data; ignored by Git
@@ -307,6 +309,9 @@ FinanceTracker/
 │   ├── support.py
 │   ├── test_crypto.py
 │   ├── test_drive_folder.py
+│   ├── test_drive_adapter.py
+│   ├── test_drive_check.py
+│   ├── fake_drive.py
 │   ├── test_google_auth.py
 │   ├── test_google_setup.py
 │   ├── test_models.py
@@ -468,7 +473,9 @@ The custom legend was chosen instead of Qt’s built-in legend so each category 
 
 ### 5.9 Per-user config and Google sign-in
 
-These modules are not used by the GUI or the CLI. `python -m finance.google_setup` is the only entry point. It stores a Google refresh token in the OS credential store and, after the user confirms the folder name and owner, saves that folder's Drive id. It does not upload finance data. `cloud_mode` in the local config stays false until a later step has both a verified generation-1 snapshot and the permanent lock file.
+These modules are not used by the GUI or the CLI. `python -m finance.google_setup` stores a Google refresh token in the OS credential store and, after the user confirms the folder name and owner, saves that folder's Drive id. It does not upload finance data. `cloud_mode` in the local config stays false until a later step has both a verified generation-1 snapshot and the permanent lock file.
+
+`finance/drive_adapter.py` is the Drive client for that saved folder. Every call runs on one background thread, with a 30 second timeout. It lists direct children, downloads and uploads by file id, updates the lock file's bytes, and moves a file to the trash. It does not permanently delete. A file this account cannot trash is reported as `not owner — skipped`. Names outside `finance_snapshot_g*.enc` and `finance_lock.json` are left alone, as is anything whose parent is not the saved folder. `python -m finance.drive_check` is the manual two-account check; it writes synthetic marker files only, and only when someone runs it. The GUI still does not call the adapter.
 
 `FINANCETRACKER_CONFIG_DIR`, when set, is the profile directory for config, the OAuth client file, the local encrypted-snapshot directory, the process-lock path, and the known-valid cache. The keyring service name becomes `FinanceTracker-profile-` plus a hash of that directory. When the variable is unset, the directory is the platform user-config location (`%LOCALAPPDATA%\FinanceTracker` on Windows, `~/Library/Application Support/FinanceTracker` on macOS) and the keyring service name is `FinanceTracker`.
 
@@ -515,7 +522,7 @@ QtCharts is imported from the PySide6 distribution; there is no separate chartin
 
 `cryptography` 50.0.2 was installed and imported on Python 3.14.3. `finance/crypto.py` uses it for AES-256-GCM and scrypt. The GUI and CLI do not call that module yet. The envelope layout and the scrypt cost (N=2**16, r=8, p=1) are documented in the module.
 
-These were imported on Python 3.14.3 as well: `google-api-python-client` 2.201.0, `google-auth` 2.62.0, `google-auth-oauthlib` 1.5.0, `google-auth-httplib2` 0.4.4, `keyring` 25.7.0 (`WinVaultKeyring`), and `platformdirs` 4.13.5. The GUI does not call them yet. `python -m finance.google_setup` does.
+These were imported on Python 3.14.3 as well: `google-api-python-client` 2.201.0, `google-auth` 2.62.0, `google-auth-oauthlib` 1.5.0, `google-auth-httplib2` 0.4.4, `keyring` 25.7.0 (`WinVaultKeyring`), and `platformdirs` 4.13.5. The GUI does not call them yet. `python -m finance.google_setup` and `python -m finance.drive_check` do, and only when someone runs them.
 
 ### 6.3 Dependency file
 
@@ -760,7 +767,7 @@ Current protections:
 
 - The file is excluded by `.gitignore`.
 - `*.tmp` files are also ignored.
-- The application does not transmit telemetry. The GUI and CLI do not contact Google. `python -m finance.google_setup` does, and only when someone runs it.
+- The application does not transmit telemetry. The GUI and CLI do not contact Google. `python -m finance.google_setup` and `python -m finance.drive_check` do, and only when someone runs them.
 
 Not provided by the running app yet:
 
@@ -1362,7 +1369,7 @@ The ignored private file is production data for this project, even though the ap
 
 ## 16. Recommended test strategy
 
-Core model, persistence, mutation, query, encryption, profile, and Google sign-in tests live in `tests/` and run with `python -m pytest` after `pip install -r requirements-dev.txt`. They use synthetic records and temporary directories, never `finance_data.json`. An autouse fixture sets `FINANCETRACKER_CONFIG_DIR` to a temporary directory, and OAuth tests pass a fake keyring. They do not contact Google. Items in 16.1–16.4 are covered there, except schema migration and core positive-amount enforcement, which are not implemented. GUI and cross-platform checks in 16.5–16.6 are still manual. The Google Cloud consent-screen test in the README is manual.
+Core model, persistence, mutation, query, encryption, profile, Google sign-in, and Drive-adapter tests live in `tests/` and run with `python -m pytest` after `pip install -r requirements-dev.txt`. They use synthetic records and temporary directories, never `finance_data.json`. An autouse fixture sets `FINANCETRACKER_CONFIG_DIR` to a temporary directory, and OAuth tests pass a fake keyring. Drive tests pass an in-memory Drive service. They do not contact Google. Items in 16.1–16.4 are covered there, except schema migration and core positive-amount enforcement, which are not implemented. GUI and cross-platform checks in 16.5–16.6 are still manual. The Google Cloud consent-screen test in the README is manual.
 
 ### 16.1 Model tests
 
@@ -1451,6 +1458,7 @@ These are recommendations, not existing commitments. They should be weighed agai
 - `to_json_bytes()` / `from_json_bytes()` convert the schema-v2 document in memory. Those bytes use `\n`. `save()` writes them in text mode, so the on-disk file uses the platform newline.
 - `finance/crypto.py` encrypts snapshot bytes with AES-256-GCM and scrypt (N=2**16, r=8, p=1). The GUI does not use it yet. `read_unverified_metadata` does not check the authentication tag; `decrypt` does.
 - `python -m finance.google_setup` stores only a Google refresh token in the OS credential store and can save a confirmed Drive folder id. It does not upload finance data. `cloud_mode` stays false. The GUI and CLI do not call this yet.
+- `finance/drive_adapter.py` lists, downloads, uploads, and trashes only inside the saved Drive folder, on one background thread. It does not permanently delete. `python -m finance.drive_check` is the two-account check and writes synthetic marker files only when someone runs it. The GUI does not call the adapter yet.
 - `FINANCETRACKER_CONFIG_DIR`, when set, is the whole per-user profile (config, OAuth client file, local encrypted copies, process lock, known-valid cache) and selects a non-production keyring service name. Unset, the profile is the platform user-config directory.
 - The OAuth scope prepared here is `https://www.googleapis.com/auth/drive`. There is no plaintext token file.
 - Saves use a same-directory temporary file plus atomic replacement.

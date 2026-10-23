@@ -10,8 +10,10 @@ the local JSON file. A later step turns cloud mode on only after a verified
 generation-1 snapshot and the permanent lock file both exist.
 
 The Drive call here is only ``files.get`` for the pasted folder (or for a
-shortcut's target). The request timeout is 30 seconds. List, upload, trash,
-and the lock file are a later step.
+shortcut's target). The request timeout is 30 seconds. Listing, download,
+upload, trash, and the lock file are in ``finance.drive_adapter``.
+``python -m finance.drive_check`` is the manual shared-folder check. The
+FinanceTracker window still does not call either of them.
 """
 
 from __future__ import annotations
