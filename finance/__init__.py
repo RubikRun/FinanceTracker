@@ -9,10 +9,13 @@ small CLI (cli.py) are both just thin clients on top of `FinanceStore`.
 `finance.profile`, `finance.google_auth`, `finance.drive_folder`, and
 `finance.google_setup` are the per-user config and Google sign-in pieces.
 `finance.drive_adapter` talks to one configured Drive folder, on one
-background thread. ``python -m finance.google_setup`` does not upload
-finance data. ``python -m finance.drive_check`` uploads a few synthetic
-marker files only when someone runs that check. The GUI and CLI do not call
-these modules. Cloud mode is not on.
+background thread. `finance.snapshots` encrypts a canonical JSON document,
+uploads it, and checks the downloaded bytes before it keeps the snapshot.
+``python -m finance.google_setup`` does not upload finance data.
+``python -m finance.drive_check`` uploads a few synthetic marker files only
+when someone runs that check. ``python -m finance.snapshot_check`` uploads
+synthetic encrypted snapshots only when someone runs that check. The GUI and
+CLI do not call these modules. Cloud mode is not on.
 """
 from .config import (
     CATEGORIES,

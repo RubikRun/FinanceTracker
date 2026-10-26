@@ -36,6 +36,8 @@ FinanceTracker/
 │   ├── google_setup.py   #   `python -m finance.google_setup`; uploads nothing
 │   ├── drive_adapter.py  #   Drive folder list/download/upload/trash
 │   ├── drive_check.py    #   `python -m finance.drive_check`; synthetic files only
+│   ├── snapshots.py      #   encrypted snapshots and retention; not used by the GUI yet
+│   ├── snapshot_check.py #   `python -m finance.snapshot_check`; synthetic snapshots only
 │   ├── models.py         #   SpendingRecord, IncomeRecord
 │   └── store.py          #   FinanceStore: load/save JSON + all queries
 ├── ui/                   # Qt (PySide6) UI — a thin client over `finance`
@@ -93,7 +95,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-The tests exercise the finance core, snapshot encryption, local config paths, Google sign-in, and the Drive adapter with fake credentials and a fake Drive service. They do not read or write `finance_data.json`, and they do not contact Google.
+The tests exercise the finance core, snapshot encryption, encrypted snapshot retention, local config paths, Google sign-in, and the Drive adapter with fake credentials and a fake Drive service. They do not read or write `finance_data.json`, and they do not contact Google.
 
 ## Google sign-in setup
 
@@ -221,6 +223,37 @@ Back on the account that ran `create`, `finish` with the same ids reads the upda
 
 If sign-in, sharing, listing, content updates, or read-back by file id fails for either account, stop. Do not continue to snapshot history, the lock, or the finance window on top of that.
 
+## Snapshot history check
+
+Run this only after the shared-folder check passed for both Google accounts, and only after that test folder is empty again. It uploads synthetic encrypted snapshots. It does not read `finance_data.json`, it does not ask for a real finance passphrase, and it does not turn cloud sync on.
+
+Use the same dry-run profile and the same empty test folder. From the project directory, with the virtual environment active and `FINANCETRACKER_CONFIG_DIR` still set:
+
+```powershell
+.\.venv\Scripts\python.exe -m finance.snapshot_check fill
+```
+
+```bash
+python -m finance.snapshot_check extend
+python -m finance.snapshot_check open
+python -m finance.snapshot_check clean
+```
+
+`fill` prints the folder name and asks you to type that name. Type it only when it is the empty test folder. It then saves 22 synthetic snapshots from this Google account. The passphrase it prints, `snapshot-check-passphrase`, is only for these test files. Do not reuse it for real finance data.
+
+Expected result on the account that ran `fill`:
+
+1. The folder keeps 20 encrypted snapshots. The two oldest were moved to that account's Drive trash. They were not permanently deleted.
+2. Opening each remaining snapshot succeeds. The command prints `Opened generation` for each one.
+3. The files in Drive do not contain the text `synthetic-snapshot-check-marker`. That text is inside the encrypted document only.
+4. The local folder printed in the output contains only encrypted snapshot files, at most 10 of them. `config.json` still has `"cloud_mode": false`.
+
+On the other Google account, with its own dry-run profile pointed at the same folder, run `extend`. Expected result: it saves two more snapshots, and every snapshot created by the first account is still in the folder. A line saying a file was trashed should name only a file this second account created. `not owner — skipped` means the other account's file was left in place.
+
+`open` on either account decrypts every snapshot still in the folder and checks the local encrypted copies.
+
+When the check is finished, run `clean` on each account. Each account moves only its own snapshots to its Drive trash. Leave the test folder empty. The finance window still saves the local JSON file, and cloud sync is still off.
+
 ## Use the CLI (optional)
 
 The CLI reads/writes the same `finance_data.json`:
@@ -260,7 +293,9 @@ whole file, so overlapping saves drop whichever copy saves last. Sign-in to a
 shared Drive folder can be prepared with `python -m finance.google_setup`
 (see above). That command does not upload finance data. `python -m finance.drive_check`
 uploads synthetic marker files into the test folder only when you run it.
-The window still saves the local JSON file, and cloud sync is not on yet.
+`python -m finance.snapshot_check` uploads synthetic encrypted snapshots into that
+same test folder only when you run it. The window still saves the local JSON
+file, and cloud sync is not on yet.
 
 ## Changing categories, currency or people
 

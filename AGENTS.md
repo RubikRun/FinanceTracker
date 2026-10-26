@@ -291,6 +291,8 @@ FinanceTracker/
 │   ├── google_setup.py            # `python -m finance.google_setup`; uploads nothing
 │   ├── drive_adapter.py           # one Drive folder; list, download, upload, trash
 │   ├── drive_check.py             # `python -m finance.drive_check`; synthetic files only
+│   ├── snapshots.py               # encrypted snapshots, generations, retention
+│   ├── snapshot_check.py          # `python -m finance.snapshot_check`; synthetic snapshots only
 │   ├── models.py                  # SpendingRecord and IncomeRecord serialization
 │   └── store.py                   # persistence, mutations, and all queries
 ├── finance_data.json              # private runtime data; ignored by Git
@@ -311,6 +313,8 @@ FinanceTracker/
 │   ├── test_drive_folder.py
 │   ├── test_drive_adapter.py
 │   ├── test_drive_check.py
+│   ├── test_snapshots.py
+│   ├── test_snapshot_check.py
 │   ├── fake_drive.py
 │   ├── test_google_auth.py
 │   ├── test_google_setup.py
@@ -476,6 +480,8 @@ The custom legend was chosen instead of Qt’s built-in legend so each category 
 These modules are not used by the GUI or the CLI. `python -m finance.google_setup` stores a Google refresh token in the OS credential store and, after the user confirms the folder name and owner, saves that folder's Drive id. It does not upload finance data. `cloud_mode` in the local config stays false until a later step has both a verified generation-1 snapshot and the permanent lock file.
 
 `finance/drive_adapter.py` is the Drive client for that saved folder. Every call runs on one background thread, with a 30 second timeout. It lists direct children, downloads and uploads by file id, updates the lock file's bytes, and moves a file to the trash. It does not permanently delete. A file this account cannot trash is reported as `not owner — skipped`. Names outside `finance_snapshot_g*.enc` and `finance_lock.json` are left alone, as is anything whose parent is not the saved folder. `python -m finance.drive_check` is the manual two-account check; it writes synthetic marker files only, and only when someone runs it. The GUI still does not call the adapter.
+
+`finance/snapshots.py` builds an encrypted snapshot from canonical JSON bytes, uploads it as a new generation, and accepts it only after a download of that file id decrypts to those same bytes. It keeps the 20 newest known-valid snapshots plus the newest known-valid snapshot of each of the last 30 UTC days, and it never leaves fewer than 5 known-valid snapshots. Pruning trashes only a file this account owns that is already in the local known-valid cache. The local profile keeps the 10 newest encrypted copies. `python -m finance.snapshot_check` runs that path against the dry-run folder with synthetic records only. The GUI and CLI still do not call it, and cloud mode stays off.
 
 `FINANCETRACKER_CONFIG_DIR`, when set, is the profile directory for config, the OAuth client file, the local encrypted-snapshot directory, the process-lock path, and the known-valid cache. The keyring service name becomes `FinanceTracker-profile-` plus a hash of that directory. When the variable is unset, the directory is the platform user-config location (`%LOCALAPPDATA%\FinanceTracker` on Windows, `~/Library/Application Support/FinanceTracker` on macOS) and the keyring service name is `FinanceTracker`.
 
@@ -1459,6 +1465,7 @@ These are recommendations, not existing commitments. They should be weighed agai
 - `finance/crypto.py` encrypts snapshot bytes with AES-256-GCM and scrypt (N=2**16, r=8, p=1). The GUI does not use it yet. `read_unverified_metadata` does not check the authentication tag; `decrypt` does.
 - `python -m finance.google_setup` stores only a Google refresh token in the OS credential store and can save a confirmed Drive folder id. It does not upload finance data. `cloud_mode` stays false. The GUI and CLI do not call this yet.
 - `finance/drive_adapter.py` lists, downloads, uploads, and trashes only inside the saved Drive folder, on one background thread. It does not permanently delete. `python -m finance.drive_check` is the two-account check and writes synthetic marker files only when someone runs it. The GUI does not call the adapter yet.
+- `finance/snapshots.py` uploads one encrypted generation per save and keeps it only when the downloaded plaintext matches the canonical JSON bytes. Retention is 20 newest known-valid snapshots, plus one per UTC day for 30 days, never fewer than 5 known-valid. It trashes only this account's already-verified files. `python -m finance.snapshot_check` writes synthetic snapshots in the dry-run folder when someone runs it. The GUI and CLI do not call this yet, and cloud mode stays off.
 - `FINANCETRACKER_CONFIG_DIR`, when set, is the whole per-user profile (config, OAuth client file, local encrypted copies, process lock, known-valid cache) and selects a non-production keyring service name. Unset, the profile is the platform user-config directory.
 - The OAuth scope prepared here is `https://www.googleapis.com/auth/drive`. There is no plaintext token file.
 - Saves use a same-directory temporary file plus atomic replacement.
