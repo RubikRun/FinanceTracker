@@ -588,6 +588,17 @@ def test_server_time_comes_from_the_date_header(monkeypatch: pytest.MonkeyPatch)
             adapter.server_time()
 
 
+def test_server_time_asks_drive_again_when_the_header_changes() -> None:
+    fake = FakeDrive(FOLDER_ID)
+    with _open(fake) as adapter:
+        first = adapter.server_time()
+        fake.date_header = "Wed, 22 Oct 2026 09:44:00 GMT"
+        second = adapter.server_time()
+    assert first == datetime(2026, 10, 22, 9, 41, tzinfo=timezone.utc)
+    assert second == datetime(2026, 10, 22, 9, 44, tzinfo=timezone.utc)
+    assert sum(1 for call in fake.calls if call["method"] == "get") >= 2
+
+
 def test_a_saved_shortcut_is_rejected_and_a_pasted_shortcut_is_followed() -> None:
     fake = FakeDrive(FOLDER_ID)
     fake.folder_mime = SHORTCUT_MIME

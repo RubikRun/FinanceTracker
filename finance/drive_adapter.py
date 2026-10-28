@@ -40,7 +40,9 @@ files with the same generation; it keeps both and picks the earlier Drive
 ``createdTime`` as the current one.
 
 Server time comes from the HTTP ``Date`` header of a Drive response. This
-computer's clock is not used for that.
+computer's clock is not used for that. ``server_time()`` asks Drive on every
+call, so a later check cannot keep a clock reading from before the computer
+slept.
 
 Shortcut folder ids are resolved by ``resolve_shared_folder`` (it follows
 ``shortcutDetails.targetId``). The id saved for later calls must already be
@@ -287,7 +289,7 @@ class DriveAdapter(Protocol):
         """Move one guarded file to the trash, or skip it when this account cannot."""
 
     def server_time(self) -> datetime:
-        """Drive's clock from the last response's Date header."""
+        """Drive's clock from a fresh response's Date header."""
 
     def close(self) -> None:
         """Stop the background thread after the current call finishes."""
@@ -807,8 +809,20 @@ class GoogleDriveAdapter:
         return payload
 
     def _server_time_now(self) -> datetime:
-        if self._server_time is None:
-            self._ensure_folder()
+        # Drop the cached header first. A missing Date on this response must
+        # not fall back to an older reading or to this computer's clock.
+        self._server_time = None
+        try:
+            resource = self._execute_retrying(
+                lambda: self._files().get(
+                    fileId=self._folder_id,
+                    fields=FOLDER_LOOKUP_FIELDS,
+                    supportsAllDrives=True,
+                )
+            )
+        except DrivePermissionError:
+            raise DrivePermissionError(_FOLDER_DENIED) from None
+        self._folder = _folder_from_resource(resource, self._folder_id)
         if self._server_time is None:
             raise DriveError(
                 "Google Drive did not provide a server time. "

@@ -27,6 +27,7 @@ from finance.profile import (
     keyring_service_name,
     known_valid_cache_path,
     load_local_config,
+    lock_session_path,
     process_lock_path,
     profile_paths,
     save_local_config,
@@ -137,6 +138,7 @@ def test_machine_id_is_created_once_and_is_not_the_host_name() -> None:
     assert encrypted_snapshots_dir().is_dir()
     assert list(encrypted_snapshots_dir().iterdir()) == []
     assert not process_lock_path().exists()
+    assert not lock_session_path().exists()
     assert not known_valid_cache_path().exists()
 
 

@@ -38,6 +38,8 @@ FinanceTracker/
 │   ├── drive_check.py    #   `python -m finance.drive_check`; synthetic files only
 │   ├── snapshots.py      #   encrypted snapshots and retention; not used by the GUI yet
 │   ├── snapshot_check.py #   `python -m finance.snapshot_check`; synthetic snapshots only
+│   ├── lock.py           #   Drive lock, heartbeat, idle release; not used by the GUI yet
+│   ├── lock_check.py     #   `python -m finance.lock_check`; dry-run folder only
 │   ├── models.py         #   SpendingRecord, IncomeRecord
 │   └── store.py          #   FinanceStore: load/save JSON + all queries
 ├── ui/                   # Qt (PySide6) UI — a thin client over `finance`
@@ -95,7 +97,7 @@ pip install -r requirements-dev.txt
 python -m pytest
 ```
 
-The tests exercise the finance core, snapshot encryption, encrypted snapshot retention, local config paths, Google sign-in, and the Drive adapter with fake credentials and a fake Drive service. They do not read or write `finance_data.json`, and they do not contact Google.
+The tests exercise the finance core, snapshot encryption, encrypted snapshot retention, the Drive lock, local config paths, Google sign-in, and the Drive adapter with fake credentials and a fake Drive service. They do not read or write `finance_data.json`, and they do not contact Google.
 
 ## Google sign-in setup
 
@@ -254,6 +256,35 @@ On the other Google account, with its own dry-run profile pointed at the same fo
 
 When the check is finished, run `clean` on each account. Each account moves only its own snapshots to its Drive trash. Leave the test folder empty. The finance window still saves the local JSON file, and cloud sync is still off.
 
+## Lock check
+
+Run this only after the shared-folder check passed for both Google accounts. Use the empty test folder, or leave synthetic snapshots in it. This check does not read `finance_data.json`, does not turn cloud sync on, and does not delete the lock file. Snapshot files stay where they are.
+
+A lock left by `python -m finance.drive_check` is marker text, not a FinanceTracker lock. Move that file to the owner's Drive trash in the Drive website before this check, or the next command will report that it cannot read the lock and will leave it unchanged.
+
+Use the same dry-run profile. From the project directory, with the virtual environment active and `FINANCETRACKER_CONFIG_DIR` still set:
+
+```powershell
+.\.venv\Scripts\python.exe -m finance.lock_check hold
+```
+
+```bash
+python -m finance.lock_check open
+python -m finance.lock_check plant
+python -m finance.lock_check idle
+```
+
+`hold` prints the folder name and asks you to type that name. Type it only when it is the test folder. It then takes the lock for Boris and heartbeats about every 30 seconds. Press Enter to release it.
+
+Expected results:
+
+1. Start `hold` in one terminal. While it is still running, start `open` in a second terminal with the same dry-run profile. `open` prints `Mode: read_only` and says another window on this computer is open. It does not change the lock. Press Enter in the first terminal. `open` again: it prints `Mode: editable`, and Enter releases the lock.
+2. Stop `hold` from Task Manager instead of pressing Enter, then run `open`. It prints `Mode: takeover` and says this computer already holds the lock. Type `TAKE OVER`. The new window takes the lock. Enter releases it.
+3. `plant` writes a stale lock held by Boris on "Other computer". `open` prints `Mode: stale` and does not take it. Type `RECOVER` only when you mean to take that lock. `python -m finance.lock_check plant --fresh` writes a current heartbeat instead. `open` then prints `Mode: read_only` and leaves the file unchanged.
+4. `idle` takes the lock and asks you not to type. After about 10 minutes it prints `Mode: paused` and `The lock is free.` Heartbeats during that wait keep the lock from looking abandoned. `config.json` still has `"cloud_mode": false`.
+
+The finance window still saves the local JSON file, and cloud sync is still off.
+
 ## Use the CLI (optional)
 
 The CLI reads/writes the same `finance_data.json`:
@@ -294,8 +325,9 @@ shared Drive folder can be prepared with `python -m finance.google_setup`
 (see above). That command does not upload finance data. `python -m finance.drive_check`
 uploads synthetic marker files into the test folder only when you run it.
 `python -m finance.snapshot_check` uploads synthetic encrypted snapshots into that
-same test folder only when you run it. The window still saves the local JSON
-file, and cloud sync is not on yet.
+same test folder only when you run it. `python -m finance.lock_check` takes and
+releases the lock in that folder only when you run it. The window still saves
+the local JSON file, and cloud sync is not on yet.
 
 ## Changing categories, currency or people
 

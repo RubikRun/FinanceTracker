@@ -11,11 +11,14 @@ small CLI (cli.py) are both just thin clients on top of `FinanceStore`.
 `finance.drive_adapter` talks to one configured Drive folder, on one
 background thread. `finance.snapshots` encrypts a canonical JSON document,
 uploads it, and checks the downloaded bytes before it keeps the snapshot.
-``python -m finance.google_setup`` does not upload finance data.
-``python -m finance.drive_check`` uploads a few synthetic marker files only
-when someone runs that check. ``python -m finance.snapshot_check`` uploads
-synthetic encrypted snapshots only when someone runs that check. The GUI and
-CLI do not call these modules. Cloud mode is not on.
+`finance.lock` takes the permanent Drive lock, heartbeats it, and releases
+it when this window is idle. ``python -m finance.google_setup`` does not
+upload finance data. ``python -m finance.drive_check`` uploads a few
+synthetic marker files only when someone runs that check.
+``python -m finance.snapshot_check`` uploads synthetic encrypted snapshots
+only when someone runs that check. ``python -m finance.lock_check`` exercises
+the lock on the dry-run folder. The GUI and CLI do not call these modules.
+Cloud mode is not on.
 """
 from .config import (
     CATEGORIES,

@@ -8,6 +8,7 @@ to one computer:
 - the desktop OAuth client file the user copies in
 - the local encrypted-snapshot directory
 - the process-lock path
+- the lock-session record written while this computer holds the Drive lock
 - the known-valid snapshot cache
 
 None of those paths sit next to the source code unless
@@ -52,6 +53,7 @@ CONFIG_FILENAME = "config.json"
 OAUTH_CLIENT_FILENAME = "google_oauth_client.json"
 ENCRYPTED_SNAPSHOTS_DIRNAME = "encrypted_snapshots"
 PROCESS_LOCK_FILENAME = "process.lock"
+LOCK_SESSION_FILENAME = "lock_session.json"
 KNOWN_VALID_CACHE_FILENAME = "known_valid.json"
 
 
@@ -99,6 +101,15 @@ def process_lock_path() -> Path:
     return app_config_dir() / PROCESS_LOCK_FILENAME
 
 
+def lock_session_path() -> Path:
+    """Local record of the Drive lock token while this process holds it.
+
+    The file is not the lock. The lock is the Drive file. The record is removed
+    when this process releases the Drive lock.
+    """
+    return app_config_dir() / LOCK_SESSION_FILENAME
+
+
 def known_valid_cache_path() -> Path:
     return app_config_dir() / KNOWN_VALID_CACHE_FILENAME
 
@@ -111,6 +122,7 @@ def profile_paths() -> dict[str, Path]:
         "oauth_client_file": oauth_client_file(),
         "encrypted_snapshots_dir": encrypted_snapshots_dir(),
         "process_lock": process_lock_path(),
+        "lock_session": lock_session_path(),
         "known_valid_cache": known_valid_cache_path(),
     }
 
