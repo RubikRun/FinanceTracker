@@ -1,13 +1,12 @@
 """Google Drive operations for one configured folder.
 
-The GUI does not call this module. Cloud mode stays off. Nothing here reads
-or writes the local finance file, and nothing here stores a passphrase or a
-refresh token.
+``finance.session`` calls this module. The GUI does not call it directly.
+Nothing here reads or writes the local finance file, and nothing here stores
+a passphrase or a refresh token.
 
-``GoogleDriveAdapter`` is the only object that talks to Drive. A later
-session layer can be given that object or any stand-in with the same
-methods. Tests pass a fake Drive service; they do not open a network
-connection.
+``GoogleDriveAdapter`` is the only object that talks to Drive. The session
+is given that object, or a stand-in with the same methods. Tests pass a
+fake Drive service; they do not open a network connection.
 
 Every service call runs on one background thread, one call at a time.
 ``httplib2`` is not safe to share across threads, and its own default

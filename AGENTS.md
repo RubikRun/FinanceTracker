@@ -250,10 +250,11 @@ user action
   -> controls are refreshed from the in-memory store
 ```
 
-CLI mutation:
+CLI mutation, and only when cloud mode is off:
 
 ```text
-argparse
+cloud-mode check (exit before any read when the flag is on)
+  -> argparse
   -> FinanceStore.load(default path)
   -> add_* mutation
   -> store.save()
@@ -285,7 +286,7 @@ FinanceTracker/
 │   ├── __init__.py                # public core exports
 │   ├── config.py                  # people, categories, formats, chart colors, data path
 │   ├── crypto.py                  # AES-256-GCM snapshot envelope; not used by the GUI yet
-│   ├── profile.py                 # per-user config dir; cloud mode stays off
+│   ├── profile.py                 # per-user config dir; cloud mode is enabled only by the session
 │   ├── google_auth.py             # Google sign-in; refresh token in the OS keyring
 │   ├── drive_folder.py            # folder link parsing and shortcut resolution
 │   ├── google_setup.py            # `python -m finance.google_setup`; uploads nothing
@@ -295,6 +296,8 @@ FinanceTracker/
 │   ├── snapshot_check.py          # `python -m finance.snapshot_check`; synthetic snapshots only
 │   ├── lock.py                    # Drive lock, heartbeat, idle release; not used by the GUI yet
 │   ├── lock_check.py              # `python -m finance.lock_check`; dry-run folder only
+│   ├── session.py                 # passphrase, lock, snapshots, migration; not used by the GUI yet
+│   ├── session_check.py           # `python -m finance.session_check`; dry-run profile only
 │   ├── models.py                  # SpendingRecord and IncomeRecord serialization
 │   └── store.py                   # persistence, mutations, and all queries
 ├── finance_data.json              # private runtime data; ignored by Git
@@ -432,7 +435,7 @@ The module validates that a loaded `user` is one of the configured `USERS`. It d
 - Date-range and user filtering.
 - Totals, gap, category aggregation, per-person category splits, and available months.
 
-Store mutations modify memory only. Callers are responsible for invoking `save()`. Both current front ends do this after successful mutations.
+Store mutations modify memory only. Callers are responsible for invoking `save()`. Both current front ends do this after successful mutations. Once cloud mode is on, `save()` raises `LocalSaveRefused` and does not create or replace the file. Cloud saves go through `finance.session`.
 
 ### 5.5 `cli.py`
 
@@ -442,6 +445,8 @@ This is a deliberately small `argparse` client. It serves two purposes:
 - Proves that the finance core is reusable without Qt.
 
 It supports add, monthly summary, and monthly list operations. It does not support edit, delete, arbitrary date ranges, or charts.
+
+At startup, before it parses a command or loads any data, it reads the local cloud-mode flag. When that flag is on, every command prints that the CLI does not support synced data yet and exits non-zero. It does not read or write `finance_data.json`. When the flag is off, behavior is unchanged. A config file that cannot be read also exits non-zero without touching the finance file.
 
 ### 5.6 `ui/add_dialog.py`
 
@@ -481,13 +486,15 @@ The custom legend was chosen instead of Qt’s built-in legend so each category 
 
 ### 5.9 Per-user config and Google sign-in
 
-These modules are not used by the GUI or the CLI. `python -m finance.google_setup` stores a Google refresh token in the OS credential store and, after the user confirms the folder name and owner, saves that folder's Drive id. It does not upload finance data. `cloud_mode` in the local config stays false until a later step has both a verified generation-1 snapshot and the permanent lock file.
+The GUI does not call these modules. `python -m finance.google_setup` stores a Google refresh token in the OS credential store and, after the user confirms the folder name and owner, saves that folder's Drive id. It does not upload finance data. `cloud_mode` stays false until `finance.session` has both a verified snapshot and the permanent lock file. `save_local_config` cannot turn the flag on. `enable_cloud_mode` is the only writer that does, and only with a folder id, a lock file id, and a generation of at least 1. Once the flag is on, later saves of the config keep it on.
 
 `finance/drive_adapter.py` is the Drive client for that saved folder. Every call runs on one background thread, with a 30 second timeout. It lists direct children, downloads and uploads by file id, updates the lock file's bytes, and moves a file to the trash. It does not permanently delete. A file this account cannot trash is reported as `not owner — skipped`. Names outside `finance_snapshot_g*.enc` and `finance_lock.json` are left alone, as is anything whose parent is not the saved folder. `python -m finance.drive_check` is the manual two-account check; it writes synthetic marker files only, and only when someone runs it. The GUI still does not call the adapter.
 
-`finance/snapshots.py` builds an encrypted snapshot from canonical JSON bytes, uploads it as a new generation, and accepts it only after a download of that file id decrypts to those same bytes. It keeps the 20 newest known-valid snapshots plus the newest known-valid snapshot of each of the last 30 UTC days, and it never leaves fewer than 5 known-valid snapshots. Pruning trashes only a file this account owns that is already in the local known-valid cache. The local profile keeps the 10 newest encrypted copies. `python -m finance.snapshot_check` runs that path against the dry-run folder with synthetic records only. The GUI and CLI still do not call it, and cloud mode stays off.
+`finance/snapshots.py` builds an encrypted snapshot from canonical JSON bytes, uploads it as a new generation, and accepts it only after a download of that file id decrypts to those same bytes. It keeps the 20 newest known-valid snapshots plus the newest known-valid snapshot of each of the last 30 UTC days, and it never leaves fewer than 5 known-valid snapshots. Pruning trashes only a file this account owns that is already in the local known-valid cache. The local profile keeps the 10 newest encrypted copies. `python -m finance.snapshot_check` runs that path against the dry-run folder with synthetic records only. The GUI does not call it directly. `finance.session` does. The snapshot check still refuses to run when cloud mode is on.
 
-`finance/lock.py` stores the lock in `finance_lock.json` and reads and writes that file by the id cached in local config. A take waits 5 seconds and keeps the lock only when the same token is still there. Heartbeats run about every 30 seconds, a lock is stale after 3 minutes, and a clean idle session releases it after 10 minutes. Those times use Drive's clock. The same computer can take its own lock back when the previous process is gone. Another computer's stale lock is taken only after confirmation. The lock file is not deleted. `python -m finance.lock_check` runs that path against the dry-run folder. The GUI and CLI still do not call it, and cloud mode stays off.
+`finance/lock.py` stores the lock in `finance_lock.json` and reads and writes that file by the id cached in local config. A take waits 5 seconds and keeps the lock only when the same token is still there. Heartbeats run about every 30 seconds, a lock is stale after 3 minutes, and a clean idle session releases it after 10 minutes. Those times use Drive's clock. The same computer can take its own lock back when the previous process is gone. Another computer's stale lock is taken only after confirmation. The lock file is not deleted. `python -m finance.lock_check` runs that path against the dry-run folder. The GUI does not call it directly. `finance.session` does. The lock check still refuses to run when cloud mode is on.
+
+`finance/session.py` is the UI-independent session the GUI will use later. Startup loads config, checks the folder, asks the caller for the passphrase, opens the newest valid snapshot without holding the lock during a wrong passphrase, then tries to take the lock. If the lock is acquired and Drive has a newer generation, it reloads before editing. Modes are editable, read-only while someone else holds the lock, paused after idle, offline read-only from the local encrypted copy, and access lost. Only editable mode can change records. A save uploads one new encrypted snapshot and does not write `finance_data.json`. `FinanceStore.save()` also refuses once cloud mode is on, so the legacy path is not a save destination. Migration reads a caller-supplied legacy file, writes a dated plaintext backup first, reuses an existing lock file, and turns cloud mode on only after the generation-1 snapshot verifies. The source file is never modified. `python -m finance.session_check` runs this against a dry-run profile and refuses the real `finance_data.json`. The GUI does not call the session yet. Restoring a local encrypted copy into an empty folder is offered and not performed yet.
 
 `FINANCETRACKER_CONFIG_DIR`, when set, is the profile directory for config, the OAuth client file, the local encrypted-snapshot directory, the process-lock path, and the known-valid cache. The keyring service name becomes `FinanceTracker-profile-` plus a hash of that directory. When the variable is unset, the directory is the platform user-config location (`%LOCALAPPDATA%\FinanceTracker` on Windows, `~/Library/Application Support/FinanceTracker` on macOS) and the keyring service name is `FinanceTracker`.
 
@@ -791,7 +798,7 @@ Not provided by the running app yet:
 - Automatic backups.
 - Audit logging.
 
-`finance.profile` can keep a Drive folder id and a machine id outside the source tree. That file is not finance data. Cloud mode is not on.
+`finance.profile` can keep a Drive folder id and a machine id outside the source tree. That file is not finance data. Cloud mode turns on only after the session has a verified snapshot and the lock file. The window does not use the session yet, so a normal launch still saves the local JSON file.
 
 Operating-system permissions, device security, disk encryption, and any cloud provider’s security are therefore still the protection boundary for `finance_data.json`.
 
@@ -1469,10 +1476,11 @@ These are recommendations, not existing commitments. They should be weighed agai
 - Money is `Decimal` in memory but fractional values are converted through float for JSON output.
 - `to_json_bytes()` / `from_json_bytes()` convert the schema-v2 document in memory. Those bytes use `\n`. `save()` writes them in text mode, so the on-disk file uses the platform newline.
 - `finance/crypto.py` encrypts snapshot bytes with AES-256-GCM and scrypt (N=2**16, r=8, p=1). The GUI does not use it yet. `read_unverified_metadata` does not check the authentication tag; `decrypt` does.
-- `python -m finance.google_setup` stores only a Google refresh token in the OS credential store and can save a confirmed Drive folder id. It does not upload finance data. `cloud_mode` stays false. The GUI and CLI do not call this yet.
+- `python -m finance.google_setup` stores only a Google refresh token in the OS credential store and can save a confirmed Drive folder id. It does not upload finance data. `cloud_mode` stays false until `finance.session` has a verified snapshot and the lock file. The GUI does not call this yet. Once cloud mode is on, `cli.py` exits before it reads the legacy file.
 - `finance/drive_adapter.py` lists, downloads, uploads, and trashes only inside the saved Drive folder, on one background thread. It does not permanently delete. `python -m finance.drive_check` is the two-account check and writes synthetic marker files only when someone runs it. The GUI does not call the adapter yet.
-- `finance/snapshots.py` uploads one encrypted generation per save and keeps it only when the downloaded plaintext matches the canonical JSON bytes. Retention is 20 newest known-valid snapshots, plus one per UTC day for 30 days, never fewer than 5 known-valid. It trashes only this account's already-verified files. `python -m finance.snapshot_check` writes synthetic snapshots in the dry-run folder when someone runs it. The GUI and CLI do not call this yet, and cloud mode stays off.
-- `finance/lock.py` keeps the Drive lock in the lock file's contents, keyed by the cached file id. Heartbeat is about 30 seconds, stale is 3 minutes, the confirmation wait is 5 seconds, and idle release is 10 minutes, all from Drive's clock. `python -m finance.lock_check` exercises that lock on the dry-run folder when someone runs it. The GUI and CLI do not call this yet, and cloud mode stays off.
+- `finance/snapshots.py` uploads one encrypted generation per save and keeps it only when the downloaded plaintext matches the canonical JSON bytes. Retention is 20 newest known-valid snapshots, plus one per UTC day for 30 days, never fewer than 5 known-valid. It trashes only this account's already-verified files. `python -m finance.snapshot_check` writes synthetic snapshots in the dry-run folder when someone runs it. The GUI does not call this directly. `finance.session` does.
+- `finance/lock.py` keeps the Drive lock in the lock file's contents, keyed by the cached file id. Heartbeat is about 30 seconds, stale is 3 minutes, the confirmation wait is 5 seconds, and idle release is 10 minutes, all from Drive's clock. `python -m finance.lock_check` exercises that lock on the dry-run folder when someone runs it. The GUI does not call this directly. `finance.session` does.
+- `finance/session.py` coordinates passphrase, snapshot load, lock, dirty state, migration, and shutdown. It does not write the legacy finance file. Cloud mode turns on only after a verified snapshot and the lock file both exist. `python -m finance.session_check` is the dry-run entry and refuses the real `finance_data.json`. The GUI does not call the session yet. Restoring a local encrypted copy into an empty folder is offered and not performed yet.
 - `FINANCETRACKER_CONFIG_DIR`, when set, is the whole per-user profile (config, OAuth client file, local encrypted copies, process lock, known-valid cache) and selects a non-production keyring service name. Unset, the profile is the platform user-config directory.
 - The OAuth scope prepared here is `https://www.googleapis.com/auth/drive`. There is no plaintext token file.
 - Saves use a same-directory temporary file plus atomic replacement.

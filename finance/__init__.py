@@ -17,8 +17,9 @@ upload finance data. ``python -m finance.drive_check`` uploads a few
 synthetic marker files only when someone runs that check.
 ``python -m finance.snapshot_check`` uploads synthetic encrypted snapshots
 only when someone runs that check. ``python -m finance.lock_check`` exercises
-the lock on the dry-run folder. The GUI and CLI do not call these modules.
-Cloud mode is not on.
+the lock on the dry-run folder. ``finance.session`` ties those pieces
+together. The GUI does not call it yet. Once cloud mode is on, ``cli.py``
+refuses to run and does not read the legacy finance file.
 """
 from .config import (
     CATEGORIES,

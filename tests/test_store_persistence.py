@@ -9,7 +9,8 @@ from decimal import Decimal
 
 import pytest
 
-from finance.store import DATA_VERSION, FinanceStore
+from finance.profile import enable_cloud_mode, ensure_machine_identity
+from finance.store import DATA_VERSION, FinanceStore, LocalSaveRefused
 from tests.support import SYNTHETIC_SECRET, assert_failure_omits_payload
 
 # Logical document produced by today's saver for `_sample_store`: schema
@@ -384,4 +385,25 @@ def test_invalid_date_fails_without_leaking_payload(data_path) -> None:
         FinanceStore.load(data_path)
 
     assert "2026-13-40" in str(exc_info.value)
+    assert_failure_omits_payload(exc_info.value)
+
+
+def test_save_refuses_when_cloud_mode_is_on(data_path) -> None:
+    config = ensure_machine_identity()
+    config.drive_folder_id = "folder-id-0123456789abc"
+    config.lock_file_id = "lock-file-id-0123456789"
+    enable_cloud_mode(config, verified_generation=1)
+    store = FinanceStore(data_path)
+    store.add_spending(
+        amount="1.00",
+        category="Misc",
+        on_date=date(2026, 10, 1),
+        user="Boris",
+        note=SYNTHETIC_SECRET,
+    )
+
+    with pytest.raises(LocalSaveRefused, match="was not written") as exc_info:
+        store.save()
+
+    assert not data_path.exists()
     assert_failure_omits_payload(exc_info.value)

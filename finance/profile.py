@@ -23,9 +23,10 @@ directory. Dry-runs and tests then cannot write the production credential
 slot. The hash is used so the service name does not contain the path, which
 may include a user name.
 
-``cloud_mode`` stays false. A later step turns it on only after a verified
-generation-1 snapshot and the permanent lock file both exist. This module
-refuses to save a config that already has it set.
+``save_local_config`` cannot turn ``cloud_mode`` on. ``enable_cloud_mode`` is
+the only writer that does, and only when the caller supplies a Drive folder
+id, a lock file id, and a verified generation of at least 1. Once cloud mode
+is on, later saves of this file keep it on.
 """
 
 from __future__ import annotations
@@ -189,12 +190,51 @@ def load_local_config() -> LocalConfig:
 
 
 def save_local_config(config: LocalConfig) -> None:
-    """Write ``config.json`` atomically. Refuses to turn cloud mode on."""
-    if config.cloud_mode:
+    """Write ``config.json`` atomically. This cannot turn cloud mode on.
+
+    When cloud mode is already on, the flag stays on. A caller that only
+    wanted to update the lock file id cannot turn the flag off by accident.
+    """
+    disk_cloud = _stored_cloud_mode()
+    if config.cloud_mode and not disk_cloud:
         raise ConfigError(
             "Cloud mode cannot be turned on here. It stays off until a verified "
             "generation-1 snapshot and the permanent lock file both exist."
         )
+    _persist(config, cloud_mode=disk_cloud)
+
+
+def enable_cloud_mode(config: LocalConfig, *, verified_generation: int) -> None:
+    """Turn cloud mode on after a verified snapshot and the lock file both exist.
+
+    The caller has already checked the snapshot. This function checks that the
+    generation is at least 1 and that the folder id and the lock file id are
+    present. It does not talk to Drive and it does not read finance records.
+    """
+    if (
+        isinstance(verified_generation, bool)
+        or not isinstance(verified_generation, int)
+        or verified_generation < 1
+    ):
+        raise ConfigError("Cloud mode stays off until a verified snapshot exists.")
+    folder_id = _checked_optional_id(config.drive_folder_id, "drive folder id")
+    lock_id = _checked_optional_id(config.lock_file_id, "lock file id")
+    if folder_id is None or lock_id is None:
+        raise ConfigError(
+            "Cloud mode stays off until the Drive folder and the permanent lock file both exist."
+        )
+    config.drive_folder_id = folder_id
+    config.lock_file_id = lock_id
+    _persist(config, cloud_mode=True)
+
+
+def _stored_cloud_mode() -> bool:
+    if not config_file().exists():
+        return False
+    return load_local_config().cloud_mode
+
+
+def _persist(config: LocalConfig, *, cloud_mode: bool) -> None:
     if config.format_version != CONFIG_FORMAT_VERSION:
         raise ConfigError("Refusing to save a configuration file of an unknown format.")
     if not _valid_machine_id(config.machine_id):
@@ -210,7 +250,7 @@ def save_local_config(config: LocalConfig) -> None:
         "machine_label": label,
         "drive_folder_id": folder_id,
         "lock_file_id": lock_id,
-        "cloud_mode": False,
+        "cloud_mode": cloud_mode,
     }
     text = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
     ensure_profile_directories()
@@ -226,7 +266,7 @@ def save_local_config(config: LocalConfig) -> None:
     config.machine_label = label
     config.drive_folder_id = folder_id
     config.lock_file_id = lock_id
-    config.cloud_mode = False
+    config.cloud_mode = cloud_mode
 
 
 def ensure_machine_identity(config: LocalConfig | None = None) -> LocalConfig:

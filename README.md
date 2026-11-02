@@ -30,7 +30,7 @@ FinanceTracker/
 ├── finance/              # UI-independent core API (no Qt here)
 │   ├── config.py         #   categories, currency, date formats, file path
 │   ├── crypto.py         #   snapshot envelope; not used by the GUI yet
-│   ├── profile.py        #   per-user config directory; cloud mode stays off
+│   ├── profile.py        #   per-user config directory; cloud mode is enabled only by the session
 │   ├── google_auth.py    #   Google sign-in; refresh token in the OS keyring
 │   ├── drive_folder.py   #   folder link parsing and shortcut resolution
 │   ├── google_setup.py   #   `python -m finance.google_setup`; uploads nothing
@@ -40,6 +40,8 @@ FinanceTracker/
 │   ├── snapshot_check.py #   `python -m finance.snapshot_check`; synthetic snapshots only
 │   ├── lock.py           #   Drive lock, heartbeat, idle release; not used by the GUI yet
 │   ├── lock_check.py     #   `python -m finance.lock_check`; dry-run folder only
+│   ├── session.py        #   passphrase, lock, snapshots, migration; not used by the GUI yet
+│   ├── session_check.py  #   `python -m finance.session_check`; dry-run profile only
 │   ├── models.py         #   SpendingRecord, IncomeRecord
 │   └── store.py          #   FinanceStore: load/save JSON + all queries
 ├── ui/                   # Qt (PySide6) UI — a thin client over `finance`
@@ -296,6 +298,8 @@ python cli.py summary 2026 6
 python cli.py summary 2026 6 --user Boris
 python cli.py list 2026 6 --user Milena
 ```
+
+Once cloud mode is on for this computer, every `cli.py` command stops before it opens `finance_data.json` and prints that the CLI does not support synced data yet. The window still saves the local file until a later step switches it to the session.
 
 ## The data file
 

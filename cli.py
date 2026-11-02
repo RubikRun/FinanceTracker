@@ -2,7 +2,8 @@
 
 This exists mainly to demonstrate that the `finance` core API is fully usable
 without the Qt UI (one of the project requirements). It reads/writes the very
-same JSON file the GUI uses.
+same JSON file the GUI uses, until cloud mode is turned on. After that, every
+command stops before the file is opened.
 
 Examples:
     python cli.py add-spending Boris 14.20 Food 2026-06-11 --note "toilet paper"
@@ -14,10 +15,12 @@ Examples:
 from __future__ import annotations
 
 import argparse
+import sys
 from datetime import date, datetime
 from typing import Optional
 
 from finance.config import ISO_DATE_FORMAT, USERS, default_data_path, format_amount
+from finance.profile import ConfigError, load_local_config
 from finance.store import FinanceStore, month_range
 
 
@@ -77,7 +80,25 @@ def _scope_label(user: Optional[str]) -> str:
     return user if user else "both"
 
 
+def _cloud_mode_block() -> str | None:
+    """A message when the CLI must not touch the legacy file, else None."""
+    try:
+        cloud_mode = load_local_config().cloud_mode
+    except ConfigError as exc:
+        return f"{exc} The local finance file was not read or written."
+    if cloud_mode:
+        return (
+            "The CLI does not support synced data yet. "
+            "The local finance file was not read or written."
+        )
+    return None
+
+
 def main(argv=None) -> int:
+    blocked = _cloud_mode_block()
+    if blocked is not None:
+        print(blocked, file=sys.stderr)
+        return 1
     args = build_parser().parse_args(argv)
     store = FinanceStore.load(default_data_path())
 

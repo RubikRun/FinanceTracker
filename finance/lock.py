@@ -1,8 +1,8 @@
 """Drive lock, same-computer process lock, and idle release.
 
-The GUI and the CLI do not call this module. Cloud mode stays off. Nothing
-here reads or writes the finance file, and nothing here deletes the Drive
-lock. The lock is the contents of ``finance_lock.json``. It is read and
+``finance.session`` calls this module. The GUI does not call it directly.
+Nothing here reads or writes the finance file, and nothing here deletes the
+Drive lock. The lock is the contents of ``finance_lock.json``. It is read and
 updated by the cached file id. ``appProperties`` are not used.
 
 Timings, all based on Drive's clock (the HTTP ``Date`` header), not on this

@@ -21,6 +21,7 @@ from finance.profile import (
     app_config_dir,
     config_file,
     default_machine_label,
+    enable_cloud_mode,
     encrypted_snapshots_dir,
     ensure_machine_identity,
     ensure_profile_directories,
@@ -184,6 +185,30 @@ def test_save_refuses_to_enable_cloud_mode() -> None:
     with pytest.raises(ConfigError, match="Cloud mode cannot be turned on"):
         save_local_config(config)
     assert load_local_config().cloud_mode is False
+
+
+def test_enable_cloud_mode_requires_a_lock_and_a_snapshot() -> None:
+    config = ensure_machine_identity()
+    config.drive_folder_id = FOLDER_ID
+    with pytest.raises(ConfigError, match="stays off"):
+        enable_cloud_mode(config, verified_generation=1)
+    config.lock_file_id = LOCK_ID
+    with pytest.raises(ConfigError, match="stays off"):
+        enable_cloud_mode(config, verified_generation=0)
+    assert load_local_config().cloud_mode is False
+
+    enable_cloud_mode(config, verified_generation=1)
+    enabled = load_local_config()
+    assert enabled.cloud_mode is True
+    assert enabled.lock_file_id == LOCK_ID
+
+    enabled.cloud_mode = False
+    enabled.machine_label = "Windows PC"
+    save_local_config(enabled)
+    kept = load_local_config()
+    assert kept.cloud_mode is True
+    assert kept.machine_label == "Windows PC"
+    assert '"cloud_mode": true' in config_file().read_text(encoding="utf-8")
 
 
 def test_darwin_label_is_macos(monkeypatch: pytest.MonkeyPatch) -> None:

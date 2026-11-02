@@ -1,7 +1,7 @@
 """Encrypted snapshots, generation checks, and tiered retention.
 
-The GUI and the CLI do not call this module. Cloud mode stays off. Nothing
-here writes the plaintext finance file. A snapshot is canonical JSON bytes,
+``finance.session`` calls this module. The GUI does not call it directly.
+Nothing here writes the plaintext finance file. A snapshot is canonical JSON bytes,
 encrypted, uploaded as a new file, then downloaded by that file id. It counts
 only after the decrypted bytes match the bytes that were encrypted.
 
@@ -643,6 +643,15 @@ class SnapshotRepository:
     def reload(self) -> LoadResult:
         """Load Drive again. The previous store object is left unchanged."""
         return self.load_latest()
+
+    def base_generation(self) -> int:
+        """Generation last loaded or saved. Zero means no snapshot has been accepted."""
+        return self._base_generation
+
+    def newest_generation(self) -> int:
+        """Newest generation in the folder listing. Zero when the folder has none."""
+        listing = self._drive.list_for_generation(tuple(self._session_ids))
+        return self._newest_generation(listing.files)
 
     def save(self, store: FinanceStore) -> SaveResult:
         """Upload a new generation when the document changed and the base still matches."""

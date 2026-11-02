@@ -35,6 +35,10 @@ def _matches_user(record_user: str, user: Optional[str]) -> bool:
     return user is None or record_user == user
 
 
+class LocalSaveRefused(Exception):
+    """The plaintext finance file was not written. The message is safe to show."""
+
+
 class FinanceStore:
     """In-memory spending and income records with optional JSON persistence.
 
@@ -102,7 +106,12 @@ class FinanceStore:
         return cls.from_json_bytes(path.read_bytes(), path)
 
     def save(self) -> None:
-        """Write the store to disk atomically (temp file + replace)."""
+        """Write the store to disk atomically (temp file + replace).
+
+        When cloud mode is on, this raises ``LocalSaveRefused`` and does not
+        create or replace the file. Cloud saves go through the session layer.
+        """
+        self._refuse_plaintext_when_cloud_mode()
         text = self.to_json_bytes().decode("utf-8")
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp = tempfile.mkstemp(dir=str(self.path.parent), suffix=".tmp")
@@ -115,6 +124,20 @@ class FinanceStore:
         finally:
             if os.path.exists(tmp):
                 os.remove(tmp)
+
+    def _refuse_plaintext_when_cloud_mode(self) -> None:
+        from .profile import ConfigError, load_local_config
+
+        try:
+            cloud_mode = load_local_config().cloud_mode
+        except ConfigError:
+            raise LocalSaveRefused(
+                "The local configuration could not be read. The finance file was not written."
+            ) from None
+        if cloud_mode:
+            raise LocalSaveRefused(
+                "Cloud mode is on. The local finance file was not written."
+            )
 
     @staticmethod
     def _compute_next_id(
