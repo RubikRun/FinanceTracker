@@ -462,14 +462,25 @@ class LocalEncryptedCopies:
         return data
 
     def names(self) -> tuple[str, ...]:
+        """Snapshot names, most recently saved on this computer first.
+
+        A file just written stays even when its generation number is lower
+        than an older practice snapshot. The generation in the name is not
+        the order.
+        """
         if not self.directory.is_dir():
             return ()
-        found = [
-            path.name
-            for path in self.directory.iterdir()
-            if path.is_file() and generation_of_name(path.name) is not None
-        ]
-        return tuple(sorted(found, key=_filename_sort_key, reverse=True))
+        found: list[tuple[int, str, str]] = []
+        for path in self.directory.iterdir():
+            if not path.is_file() or generation_of_name(path.name) is None:
+                continue
+            try:
+                modified = path.stat().st_mtime_ns
+            except OSError:
+                modified = 0
+            found.append((modified, _snapshot_stamp(path.name), path.name))
+        found.sort(reverse=True)
+        return tuple(item[2] for item in found)
 
     def _trim(self) -> None:
         kept = self.names()
@@ -485,8 +496,16 @@ def _snapshot_filename(name: str) -> str:
     return name
 
 
-def _filename_sort_key(name: str) -> tuple:
-    return (generation_of_name(name) or 0, name)
+_SNAPSHOT_STAMP = re.compile(
+    r"^finance_snapshot_g[0-9]{6}_(?P<stamp>[0-9]{8}T[0-9]{6}Z)_"
+)
+
+
+def _snapshot_stamp(name: str) -> str:
+    match = _SNAPSHOT_STAMP.search(name)
+    if match is None:
+        return ""
+    return match.group("stamp")
 
 
 def _replace_text(path: Path, text: str) -> None:

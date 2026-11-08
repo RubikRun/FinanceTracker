@@ -929,10 +929,20 @@ class FinanceSession:
             self._committed = None
             return self._publish(
                 MODE_SETUP,
-                "Google Drive could not be reached, and the local copy could not be decrypted. "
-                "Try the passphrase again. Nothing was changed.",
+                "Google Drive could not be reached. The encrypted copies on this computer "
+                "did not open with this passphrase. The local finance file was not used.",
                 can_edit=False,
                 choices=(CHOICE_RETRY_PASSPHRASE, CHOICE_CANCEL),
+            )
+        if opened == "malformed":
+            self._store = None
+            self._committed = None
+            return self._publish(
+                MODE_ACCESS_LOST,
+                "Google Drive could not be reached. The copies on this computer "
+                "are not encrypted snapshots. The local finance file was not used.",
+                can_edit=False,
+                choices=(CHOICE_TRY_AGAIN, CHOICE_CANCEL),
             )
         if not isinstance(opened, SessionStatus):
             return self._publish(
@@ -947,7 +957,8 @@ class FinanceSession:
         names = LocalEncryptedCopies(self._local_dir).names()
         if not names:
             return None
-        saw_crypto = False
+        saw_auth = False
+        saw_malformed = False
         for name in names:
             try:
                 envelope = (self._local_dir / name).read_bytes()
@@ -956,14 +967,14 @@ class FinanceSession:
             try:
                 header = read_unverified_metadata(envelope)
             except CryptoError:
-                saw_crypto = True
+                saw_malformed = True
                 continue
             if header.generation != generation_of_name(name):
                 continue
             try:
                 decrypted = decrypt(envelope, passphrase)
             except CryptoError:
-                saw_crypto = True
+                saw_auth = True
                 continue
             try:
                 parsed = FinanceStore.from_json_bytes(decrypted.plaintext, self._memory_path)
@@ -987,8 +998,10 @@ class FinanceSession:
                 can_edit=False,
                 choices=(CHOICE_TRY_AGAIN,),
             )
-        if saw_crypto:
+        if saw_auth:
             return "passphrase"
+        if saw_malformed:
+            return "malformed"
         return None
 
     def _ensure_lock_file(self) -> str | SessionStatus:

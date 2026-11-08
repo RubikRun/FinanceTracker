@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
@@ -22,7 +23,7 @@ from finance.lock import (
     decode_lock,
     encode_lock,
 )
-from finance.profile import load_local_config, process_lock_path
+from finance.profile import encrypted_snapshots_dir, load_local_config, process_lock_path
 from finance.session import (
     CHOICE_CREATE_EMPTY,
     CHOICE_DISCARD,
@@ -388,6 +389,75 @@ def test_generation_changed_between_load_and_lock(world: World) -> None:
     assert "updated from the other computer" in status.message
     assert world.session.store is not None
     assert world.session.store.income[0].amount == Decimal("10")
+
+
+def test_newer_copy_survives_older_files_with_higher_generations(world: World) -> None:
+    directory = encrypted_snapshots_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    other = _records(world.root, "1.00")
+    other_metadata = SnapshotMetadata(
+        generation=1,
+        created_at_utc=NOW - timedelta(days=30),
+        spending_count=0,
+        income_count=1,
+        next_id=other._next_id,
+    )
+    for generation in range(13, 23):
+        metadata = SnapshotMetadata(
+            generation=generation,
+            created_at_utc=other_metadata.created_at_utc,
+            spending_count=0,
+            income_count=1,
+            next_id=other._next_id,
+        )
+        name = snapshot_name(generation, NOW - timedelta(days=30), f"{generation:012x}")
+        path = directory / name
+        path.write_bytes(encrypt(other.to_json_bytes(), "other-passphrase", metadata))
+        old_stamp = (NOW - timedelta(days=30)).timestamp()
+        os.utime(path, (old_stamp, old_stamp))
+
+    _plant(world.fake, _records(world.root, "20.00"), 1, "snap-0001-abcdefghij")
+    _free_lock(world.fake)
+    opened = world.session.open_with_passphrase(PASSPHRASE)
+    _quiet(opened)
+    assert opened.mode == MODE_EDITABLE
+    names = [path.name for path in directory.iterdir() if path.is_file()]
+    assert any(generation_of_name(name) == 1 for name in names)
+    assert len(names) <= 10
+
+    def down(_method: str) -> None:
+        raise TimeoutError("down")
+
+    world.fake.before_execute = down
+    second = _session(world.adapter, world.root)
+    try:
+        offline = second.open_with_passphrase(PASSPHRASE)
+        _quiet(offline)
+        assert offline.mode == MODE_OFFLINE
+        assert offline.generation == 1
+        assert second.store is not None
+        assert second.store.income[0].amount == Decimal("20")
+        assert PASSPHRASE not in offline.message
+    finally:
+        second.close()
+
+
+def test_offline_plaintext_copy_is_not_called_a_wrong_passphrase(world: World) -> None:
+    directory = encrypted_snapshots_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    name = snapshot_name(4, NOW - timedelta(days=1), "abcdefabcdef")
+    (directory / name).write_bytes(b"{" + b"not-a-snapshot" * 8)
+
+    def down(_method: str) -> None:
+        raise TimeoutError("down")
+
+    world.fake.before_execute = down
+    status = world.session.open_with_passphrase(PASSPHRASE)
+    _quiet(status)
+    assert status.mode == MODE_ACCESS_LOST
+    assert "not encrypted snapshots" in status.message
+    assert "passphrase" not in status.message.lower()
+    assert world.session.store is None
 
 
 def test_drive_unreachable_uses_the_local_copy_read_only(world: World) -> None:
