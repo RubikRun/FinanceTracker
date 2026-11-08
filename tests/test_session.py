@@ -28,6 +28,7 @@ from finance.session import (
     CHOICE_CREATE_EMPTY,
     CHOICE_DISCARD,
     CHOICE_IMPORT,
+    CHOICE_RESTORE_LOCAL,
     MODE_ACCESS_LOST,
     MODE_CLOSED,
     MODE_EDITABLE,
@@ -38,6 +39,12 @@ from finance.session import (
     FinanceSession,
     SessionError,
     SessionStatus,
+)
+from finance.snapshots import (
+    SOURCE_DRIVE,
+    SOURCE_LOCAL,
+    LocalEncryptedCopies,
+    summary_text,
 )
 from finance.store import FinanceStore, LocalSaveRefused
 from tests.fake_drive import FakeDrive, http_error
@@ -702,3 +709,358 @@ def test_setup_shows_record_counts_and_not_notes(world: World) -> None:
 
 def test_lock_mode_constant_matches_the_lock_module() -> None:
     assert MODE_EDITABLE == LOCK_EDITABLE
+
+
+def _sealed(store: FinanceStore, generation: int, when: datetime) -> bytes:
+    metadata = SnapshotMetadata(
+        generation=generation,
+        created_at_utc=when,
+        spending_count=len(store.spending),
+        income_count=len(store.income),
+        next_id=store._next_id,
+    )
+    return encrypt(store.to_json_bytes(), PASSPHRASE, metadata)
+
+
+def _spending(root: Path, note: str, amount: str = "3.00") -> FinanceStore:
+    store = FinanceStore(root / "builder-not-saved.json")
+    store.add_spending(
+        amount=amount,
+        category="Misc",
+        on_date=date(2026, 10, 2),
+        user="Boris",
+        note=note,
+        recorded_on=date(2026, 10, 3),
+    )
+    return store
+
+
+def test_backup_list_is_newest_first_and_does_not_decrypt(world: World, monkeypatch) -> None:
+    early = _records(world.root, "11.00")
+    late = _spending(world.root, "late-conflict-note")
+    local_store = _spending(world.root, "local-row-note", "4.00")
+    local_store.add_spending(
+        amount="5.00",
+        category="Misc",
+        on_date=date(2026, 10, 3),
+        user="Milena",
+        note="local-row-two",
+        recorded_on=date(2026, 10, 3),
+    )
+    early_when = NOW
+    late_when = NOW + timedelta(seconds=30)
+    local_when = NOW + timedelta(hours=1)
+    old_when = NOW - timedelta(days=1)
+    early_id = "snap-gen2-earlyaaaa"
+    late_id = "snap-gen2-lateaaaaa"
+    world.fake.add(
+        "snap-gen1-olderaaaa",
+        snapshot_name(1, old_when, "444444444444"),
+        content=_sealed(early, 1, old_when),
+        created_time=old_when,
+    )
+    world.fake.add(
+        early_id,
+        snapshot_name(2, early_when, "111111111111"),
+        content=_sealed(early, 2, early_when),
+        created_time=early_when,
+    )
+    world.fake.add(
+        late_id,
+        snapshot_name(2, late_when, "222222222222"),
+        content=_sealed(late, 2, late_when),
+        created_time=late_when,
+    )
+    world.fake.add(
+        "snap-gen3-badaaaaaa",
+        snapshot_name(3, NOW, "333333333333"),
+        content=b"not-a-snapshot",
+        created_time=NOW + timedelta(minutes=5),
+    )
+    local_name = snapshot_name(4, local_when, "555555555555")
+    LocalEncryptedCopies(encrypted_snapshots_dir()).write(
+        local_name, _sealed(local_store, 4, local_when)
+    )
+    _free_lock(world.fake)
+    opened = world.session.open_with_passphrase(PASSPHRASE)
+    _quiet(opened)
+    assert opened.generation == 2
+    import finance.snapshots as snapshot_module
+
+    calls = {"decrypt": 0}
+    real_decrypt = snapshot_module.decrypt
+
+    def counting(envelope: bytes, passphrase: str):
+        calls["decrypt"] += 1
+        return real_decrypt(envelope, passphrase)
+
+    monkeypatch.setattr(snapshot_module, "decrypt", counting)
+    world.fake.calls.clear()
+    catalog = world.session.list_backups()
+    text = summary_text(catalog)
+    _quiet(opened)
+    assert SYNTHETIC_SECRET not in text
+    assert "late-conflict-note" not in text
+    assert "local-row-note" not in text
+    assert PASSPHRASE not in text
+    assert calls["decrypt"] == 0
+    assert [item.generation for item in catalog.valid] == [4, 2, 2, 1]
+    assert [item.generation for item in catalog.unusable] == [3]
+    assert catalog.valid[0].source == SOURCE_LOCAL
+    assert catalog.valid[0].saved_by == "This computer"
+    assert catalog.valid[0].spending_count == 2
+    late_row = next(item for item in catalog.valid if item.key == f"{SOURCE_DRIVE}:{late_id}")
+    early_row = next(item for item in catalog.valid if item.key == f"{SOURCE_DRIVE}:{early_id}")
+    assert late_row.spending_count == 1
+    assert late_row.known_valid is False
+    assert late_row.conflict is True
+    assert early_row.conflict is True
+    assert early_row.current is True
+    assert early_row.saved_by == "Account A"
+    assert catalog.valid[-1].conflict is False
+    assert "envelope" in catalog.unusable[0].reason
+    media = [call["fileId"] for call in world.fake.calls if call["method"] == "get_media"]
+    assert early_id not in media
+    assert late_id in media
+    refused = world.session.restore_backup(catalog.unusable[0].key)
+    _quiet(refused)
+    assert "cannot be restored" in refused.message
+    assert calls["decrypt"] == 0
+    assert len(_snapshots(world.fake)) == 4
+
+
+def test_restore_refuses_while_dirty_and_without_the_lock(world: World) -> None:
+    first = _records(world.root, "11.00")
+    second = _records(world.root, "22.00")
+    _plant(world.fake, first, 1, "snap-0001-abcdefghij")
+    _plant(world.fake, second, 2, "snap-0002-abcdefghij")
+    _free_lock(world.fake)
+    assert world.session.open_with_passphrase(PASSPHRASE).generation == 2
+    catalog = world.session.list_backups()
+    older = next(item for item in catalog.valid if item.generation == 1)
+    world.session.store.add_income(
+        amount="3.00",
+        on_date=date(2026, 10, 6),
+        user="Boris",
+        note="still-here",
+    )
+    before = {item.file_id: bytes(item.content) for item in _snapshots(world.fake)}
+    refused = world.session.restore_backup(older.key)
+    _quiet(refused)
+    assert "Unsaved" in refused.message
+    assert world.session.dirty is True
+    assert len(world.session.store.income) == 2
+    assert {item.file_id: bytes(item.content) for item in _snapshots(world.fake)} == before
+
+
+def test_restore_needs_the_editing_lock(world: World) -> None:
+    first = _records(world.root, "11.00")
+    _plant(world.fake, first, 1, "snap-0001-abcdefghij")
+    _held_lock(world.fake)
+    status = world.session.open_with_passphrase(PASSPHRASE)
+    _quiet(status)
+    assert status.mode == MODE_READ_ONLY
+    catalog = world.session.list_backups()
+    blocked = world.session.restore_backup(catalog.valid[0].key)
+    _quiet(blocked)
+    assert "editing lock" in blocked.message
+    assert blocked.can_edit is False
+    assert len(_snapshots(world.fake)) == 1
+
+
+def test_restore_older_version_and_a_local_copy(world: World) -> None:
+    first = _records(world.root, "11.00")
+    second = _records(world.root, "22.00")
+    _plant(world.fake, first, 1, "snap-0001-abcdefghij")
+    _plant(world.fake, second, 2, "snap-0002-abcdefghij")
+    _free_lock(world.fake)
+    assert world.session.open_with_passphrase(PASSPHRASE).generation == 2
+    older = next(
+        item for item in world.session.list_backups().valid if item.generation == 1
+    )
+    previous = {
+        item.file_id: bytes(item.content) for item in _snapshots(world.fake)
+    }
+    restored = world.session.restore_backup(older.key)
+    _quiet(restored)
+    assert restored.mode == MODE_EDITABLE
+    assert restored.generation == 3
+    assert restored.dirty is False
+    assert world.session.store is not None
+    assert world.session.store.income[0].amount == Decimal("11")
+    for file_id, content in previous.items():
+        assert world.fake.files[file_id].content == content
+        assert world.fake.files[file_id].trashed is False
+    assert len(_snapshots(world.fake)) == 3
+    newest = max(_snapshots(world.fake), key=lambda item: generation_of_name(item.name) or 0)
+    opened = decrypt(newest.content, PASSPHRASE)
+    _same(opened.plaintext, first.to_json_bytes())
+    assert opened.metadata.generation == 3
+
+    local_name = snapshot_name(8, NOW + timedelta(minutes=2), "999999999999")
+    LocalEncryptedCopies(encrypted_snapshots_dir()).write(
+        local_name, _sealed(second, 8, NOW + timedelta(minutes=2))
+    )
+    local = next(
+        item
+        for item in world.session.list_backups().valid
+        if item.source == SOURCE_LOCAL and item.generation == 8
+    )
+    again = world.session.restore_backup(local.key)
+    _quiet(again)
+    assert again.generation == 4
+    assert again.dirty is False
+    assert world.session.store.income[0].amount == Decimal("22")
+    assert world.fake.files["snap-0001-abcdefghij"].trashed is False
+    assert world.fake.files["snap-0002-abcdefghij"].trashed is False
+    assert len(_snapshots(world.fake)) == 4
+    _same(
+        decrypt(world.fake.files["snap-0002-abcdefghij"].content, PASSPHRASE).plaintext,
+        second.to_json_bytes(),
+    )
+
+
+def test_failed_restore_upload_leaves_the_current_snapshot(world: World) -> None:
+    first = _records(world.root, "11.00")
+    second = _records(world.root, "22.00")
+    _plant(world.fake, first, 1, "snap-0001-abcdefghij")
+    _plant(world.fake, second, 2, "snap-0002-abcdefghij")
+    _free_lock(world.fake)
+    assert world.session.open_with_passphrase(PASSPHRASE).generation == 2
+    older = next(
+        item for item in world.session.list_backups().valid if item.generation == 1
+    )
+    before = {
+        item.file_id: (bytes(item.content), item.trashed, item.name)
+        for item in world.fake.files.values()
+        if generation_of_name(item.name) is not None
+    }
+    world.fake.lose_create_response = True
+    world.fake.apply_lost_create = False
+    failed = world.session.restore_backup(older.key)
+    _quiet(failed)
+    assert "not confirmed" in failed.message or "left in place" in failed.message
+    assert world.session.generation == 2
+    assert world.session.dirty is False
+    assert world.session.store is not None
+    assert world.session.store.income[0].amount == Decimal("22")
+    assert len(_snapshots(world.fake)) == 2
+    for file_id, (content, trashed, name) in before.items():
+        item = world.fake.files[file_id]
+        assert item.content == content
+        assert item.trashed is trashed
+        assert item.name == name
+
+
+def test_retention_after_restore_keeps_the_previous_latest(world: World, monkeypatch) -> None:
+    source = _records(world.root, "11.00")
+    _plant(world.fake, source, 1, "snap-0001-abcdefghij")
+    _free_lock(world.fake)
+    assert world.session.open_with_passphrase(PASSPHRASE).generation == 1
+    for amount in ("12.00", "13.00", "14.00"):
+        world.session.store.add_income(
+            amount=amount,
+            on_date=date(2026, 10, 8),
+            user="Boris",
+            note="extra",
+        )
+        saved = world.session.save()
+        _quiet(saved)
+        assert saved.dirty is False
+    assert world.session.generation == 4
+    previous = next(
+        item for item in _snapshots(world.fake) if generation_of_name(item.name) == 4
+    )
+    older = next(
+        item for item in world.session.list_backups().valid if item.generation == 1
+    )
+    monkeypatch.setattr("finance.snapshots.KEEP_RECENT_SNAPSHOTS", 2)
+    monkeypatch.setattr("finance.snapshots.MIN_KNOWN_VALID", 2)
+    restored = world.session.restore_backup(older.key)
+    _quiet(restored)
+    assert restored.generation == 5
+    assert restored.dirty is False
+    assert len(world.session.store.income) == 1
+    assert world.session.store.income[0].amount == Decimal("11")
+    assert previous.trashed is False
+    kept = {
+        generation_of_name(item.name)
+        for item in _snapshots(world.fake)
+    }
+    trashed = {
+        generation_of_name(item.name)
+        for item in world.fake.files.values()
+        if generation_of_name(item.name) is not None and item.trashed
+    }
+    assert kept == {4, 5}
+    assert trashed == {1, 2, 3}
+    newest = next(item for item in _snapshots(world.fake) if generation_of_name(item.name) == 5)
+    _same(decrypt(newest.content, PASSPHRASE).plaintext, source.to_json_bytes())
+
+
+def test_corrupt_newest_is_listed_and_not_replaced_on_open(world: World) -> None:
+    good = _records(world.root, "5.00")
+    _plant(world.fake, good, 1, "snap-0001-abcdefghij")
+    world.fake.add(
+        "snap-0002-badaaaaaaa",
+        snapshot_name(2, NOW, "666666666666"),
+        content=b"not-a-snapshot",
+        created_time=NOW + timedelta(minutes=1),
+    )
+    _free_lock(world.fake)
+    status = world.session.open_with_passphrase(PASSPHRASE)
+    _quiet(status)
+    assert status.mode == MODE_EDITABLE
+    assert status.generation == 1
+    assert "Skipped" in status.message
+    catalog = world.session.list_backups()
+    assert any(item.generation == 2 for item in catalog.unusable)
+    assert all(item.generation != 2 for item in catalog.valid)
+    assert len(_snapshots(world.fake)) == 2
+    assert SYNTHETIC_SECRET not in summary_text(catalog)
+
+
+def test_restore_local_copy_into_an_empty_folder(world: World) -> None:
+    source = _records(world.root, "14.20")
+    name = snapshot_name(7, NOW, "abc123abc123")
+    LocalEncryptedCopies(encrypted_snapshots_dir()).write(name, _sealed(source, 7, NOW))
+    preview = world.session.open_with_passphrase(PASSPHRASE)
+    _quiet(preview)
+    assert preview.mode == MODE_SETUP
+    assert CHOICE_RESTORE_LOCAL in preview.choices
+    assert CHOICE_CREATE_EMPTY in preview.choices
+    assert "later step" not in preview.message
+    assert "uploads that copy" in preview.message
+    status = world.session.restore_local_copy()
+    _quiet(status)
+    assert status.mode == MODE_EDITABLE
+    assert status.generation == 1
+    assert status.dirty is False
+    assert "generation 7" in status.message
+    assert load_local_config().cloud_mode is True
+    assert len(_locks(world.fake)) == 1
+    snapshots = _snapshots(world.fake)
+    assert len(snapshots) == 1
+    opened = decrypt(snapshots[0].content, PASSPHRASE)
+    _same(opened.plaintext, source.to_json_bytes())
+    assert opened.metadata.generation == 1
+    assert (encrypted_snapshots_dir() / name).is_file()
+    assert not world.legacy.exists()
+
+
+def test_wrong_passphrase_does_not_upload_a_local_copy(world: World) -> None:
+    source = _records(world.root, "14.20")
+    name = snapshot_name(7, NOW, "abc123abc123")
+    LocalEncryptedCopies(encrypted_snapshots_dir()).write(name, _sealed(source, 7, NOW))
+    preview = world.session.open_with_passphrase("wrong-passphrase-value")
+    _quiet(preview)
+    assert CHOICE_RESTORE_LOCAL in preview.choices
+    failed = world.session.restore_local_copy()
+    _quiet(failed)
+    assert "did not open" in failed.message
+    assert failed.can_edit is False
+    assert _snapshots(world.fake) == []
+    assert _locks(world.fake) == []
+    assert load_local_config().cloud_mode is False
+    assert "wrong-passphrase-value" not in failed.message
+    assert (encrypted_snapshots_dir() / name).is_file()

@@ -7,7 +7,7 @@ from decimal import Decimal
 
 import pytest
 
-from finance.drive_adapter import LOCK_FILE_NAME
+from finance.drive_adapter import LOCK_FILE_NAME, snapshot_name
 from finance.lock import LockDocument, decode_lock, encode_lock
 from finance.session import (
     CHOICE_CREATE_EMPTY,
@@ -412,8 +412,12 @@ def test_startup_mismatch_cancel_and_restore_message(tmp_path) -> None:
         restore_prompts = ScriptedPrompts(choices=[CHOICE_RESTORE_LOCAL, CHOICE_CANCEL])
         assert continue_open(session, restore_prompts, preview) is None
         assert any(
-            "not available" in item[2] for item in restore_prompts.asked if item[0] == "choose"
+            "Nothing was uploaded" in item[2]
+            for item in restore_prompts.asked
+            if item[0] == "choose"
         )
+        assert any(item[0] == "confirm" for item in restore_prompts.asked)
+        assert _snapshots(fake) == []
     finally:
         session.close(discard=True)
         adapter.close()
@@ -466,4 +470,30 @@ def test_backup_browsing_choice_does_not_change_anything() -> None:
     )
     assert continue_open(session, prompts, status) is None
     assert session.calls == []
-    assert any("not in the window" in message for _title, message in prompts.infos)
+    assert any("Nothing was changed" in message for _title, message in prompts.infos)
+
+
+def test_unreadable_snapshots_are_listed_and_not_restored(tmp_path) -> None:
+    fake = FakeDrive("folder-id-0123456789abc")
+    fake.date_header = _http_date(NOW)
+    adapter = _adapter(fake)
+    session = _session(adapter, tmp_path)
+    fake.add(
+        "bad-file-id-0123456789",
+        snapshot_name(1, NOW, "1234567890ab"),
+        content=b"not-a-snapshot",
+    )
+    try:
+        failed = session.open_with_passphrase(PASSPHRASE)
+        assert CHOICE_INSPECT_RECOVER in failed.choices
+        prompts = ScriptedPrompts(choices=[CHOICE_INSPECT_RECOVER, CHOICE_CANCEL])
+        assert continue_open(session, prompts, failed) is None
+        text = "\n".join(message for _title, message in prompts.infos)
+        assert "cannot be restored" in text
+        assert "Nothing was changed." in text
+        assert PASSPHRASE not in text
+        assert len(_snapshots(fake)) == 1
+        assert not any(item.name == LOCK_FILE_NAME for item in fake.files.values())
+    finally:
+        session.close(discard=True)
+        adapter.close()

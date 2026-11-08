@@ -185,11 +185,58 @@ class SnapshotDescription:
     known_valid: bool
     invalid: bool
     md5_checksum: str
+    reason: str = ""
+    conflict: bool = False
 
     def __repr__(self) -> str:
         return (
             f"SnapshotDescription(file_id={self.file_id!r}, "
             f"generation={self.generation!r}, known_valid={self.known_valid!r})"
+        )
+
+
+SOURCE_DRIVE = "drive"
+SOURCE_LOCAL = "local"
+SAVED_BY_THIS_COMPUTER = "This computer"
+
+
+@dataclass(frozen=True)
+class RecoveryItem:
+    """One row in the backup list. It has no notes, amounts, or passphrase."""
+
+    key: str
+    source: str
+    name: str
+    generation: int | None
+    created_at_utc: datetime | None
+    spending_count: int | None
+    income_count: int | None
+    next_id: int | None
+    saved_by: str
+    known_valid: bool
+    conflict: bool
+    current: bool
+    invalid: bool
+    reason: str
+
+    def __repr__(self) -> str:
+        return (
+            f"RecoveryItem(source={self.source!r}, generation={self.generation!r}, "
+            f"invalid={self.invalid!r})"
+        )
+
+
+@dataclass(frozen=True)
+class RecoveryCatalog:
+    """Valid snapshots first, then copies that failed validation."""
+
+    valid: tuple[RecoveryItem, ...]
+    unusable: tuple[RecoveryItem, ...]
+    message: str = ""
+
+    def __repr__(self) -> str:
+        return (
+            f"RecoveryCatalog(valid={len(self.valid)}, unusable={len(self.unusable)})"
         )
 
 
@@ -694,7 +741,131 @@ class SnapshotRepository:
         for item in _snapshot_files(listing.files):
             described.append(self._describe_one(item))
         described.sort(key=lambda item: item.generation or 0, reverse=True)
-        return tuple(described)
+        return _with_conflicts(described)
+
+    def recovery_catalog(
+        self,
+        *,
+        current_file_id: str | None,
+        current_generation: int | None,
+    ) -> RecoveryCatalog:
+        """Drive snapshots plus local copies. Counts come from headers, not decryption."""
+        return _assemble_catalog(
+            list(self.describe()),
+            _local_headers(self._copies.directory),
+            current_file_id=current_file_id,
+            current_generation=current_generation,
+            message="",
+        )
+
+    def plaintext_for_recovery(self, key: str) -> bytes:
+        """Decrypt one selected snapshot and return its canonical JSON bytes.
+
+        This does not upload. A failure raises ``SnapshotError`` and leaves Drive alone.
+        """
+        source, ident = _split_recovery_key(key)
+        if source == SOURCE_DRIVE:
+            listing = self._drive.list_for_generation(())
+            matches = [
+                item for item in _snapshot_files(listing.files) if item.file_id == ident
+            ]
+            if len(matches) != 1:
+                raise SnapshotError(
+                    "That snapshot is not in the Drive folder. Nothing was uploaded."
+                )
+            item = matches[0]
+            if self._cache.invalid(item) is not None:
+                raise SnapshotError(
+                    "That snapshot failed validation and cannot be restored. Nothing was uploaded."
+                )
+            try:
+                envelope = self._envelope(item)
+            except DriveError as exc:
+                raise SnapshotError(str(exc)) from None
+            name = item.name
+        else:
+            try:
+                name = _snapshot_filename(ident)
+            except SnapshotError:
+                raise SnapshotError(
+                    "That backup could not be found. Nothing was uploaded."
+                ) from None
+            path = self._copies.directory / name
+            if not path.is_file():
+                raise SnapshotError(
+                    "That local copy could not be found. Nothing was uploaded."
+                )
+            try:
+                envelope = path.read_bytes()
+            except OSError:
+                raise SnapshotError(
+                    "That local copy could not be read. Nothing was uploaded."
+                ) from None
+        try:
+            decrypted = decrypt(envelope, self._passphrase)
+            store = self._store_from_plaintext(
+                decrypted.plaintext, decrypted.metadata, name
+            )
+        except CryptoError:
+            raise SnapshotError(
+                "That snapshot could not be decrypted. Nothing was uploaded."
+            ) from None
+        except _InvalidSnapshot:
+            raise SnapshotError(
+                "That snapshot is not a valid finance document. Nothing was uploaded."
+            ) from None
+        return store.to_json_bytes()
+
+    def open_newest_local(self) -> tuple[FinanceStore, int] | None:
+        """The newest local copy that decrypts, or None when this computer has none.
+
+        Copies that do not open are skipped. If every copy fails, this raises
+        ``SnapshotError`` and does not upload.
+        """
+        names = self._copies.names()
+        if not names:
+            return None
+        saw_crypto = False
+        saw_bad = False
+        for name in names:
+            path = self._copies.directory / name
+            try:
+                envelope = path.read_bytes()
+            except OSError:
+                saw_bad = True
+                continue
+            if not envelope.startswith(b"FTEN"):
+                saw_bad = True
+                continue
+            try:
+                header = read_unverified_metadata(envelope)
+            except CryptoError:
+                saw_bad = True
+                continue
+            if header.generation != generation_of_name(name):
+                saw_bad = True
+                continue
+            try:
+                decrypted = decrypt(envelope, self._passphrase)
+                store = self._store_from_plaintext(
+                    decrypted.plaintext, decrypted.metadata, name
+                )
+            except CryptoError:
+                saw_crypto = True
+                continue
+            except _InvalidSnapshot:
+                saw_bad = True
+                continue
+            return store, decrypted.metadata.generation
+        if saw_crypto:
+            raise SnapshotError(
+                "The local encrypted copies did not open with this passphrase. Nothing was uploaded."
+            )
+        if saw_bad:
+            raise SnapshotError(
+                "The copies on this computer are not valid encrypted snapshots. Nothing was uploaded."
+            )
+        return None
 
     def _save(self, store: FinanceStore) -> SaveResult:
         listing = self._drive.list_for_generation(tuple(self._session_ids))
@@ -924,12 +1095,16 @@ class SnapshotRepository:
         return tuple(actions)
 
     def _describe_one(self, item: DriveFile) -> SnapshotDescription:
-        owners = tuple(
-            owner.display_name or owner.email for owner in item.owners
-        )
+        owners = _owner_labels(item)
         invalid = self._cache.invalid(item)
         if invalid is not None:
-            return _description(item, owners, known_valid=False, invalid=True)
+            return _description(
+                item,
+                owners,
+                known_valid=False,
+                invalid=True,
+                reason=invalid.reason or _INVALID_DOCUMENT,
+            )
         verified = self._cache.verified(item)
         if verified is not None:
             return _description(
@@ -951,11 +1126,31 @@ class SnapshotRepository:
         try:
             envelope = self._drive.download(item.file_id)
             metadata = read_unverified_metadata(envelope)
-        except (DriveError, CryptoError):
-            return _description(item, owners, known_valid=False, invalid=True)
+        except DriveError:
+            return _description(
+                item,
+                owners,
+                known_valid=False,
+                invalid=True,
+                reason="The snapshot could not be read.",
+            )
+        except CryptoError:
+            return _description(
+                item,
+                owners,
+                known_valid=False,
+                invalid=True,
+                reason=_MALFORMED,
+            )
         if metadata.generation != item.generation:
             self._cache.mark_invalid(item, _NAME_MISMATCH)
-            return _description(item, owners, known_valid=False, invalid=True)
+            return _description(
+                item,
+                owners,
+                known_valid=False,
+                invalid=True,
+                reason=_NAME_MISMATCH,
+            )
         self._cache.remember_header(item, metadata)
         return _description(
             item,
@@ -1093,6 +1288,7 @@ def _description(
     known_valid: bool,
     invalid: bool,
     entry: _CacheEntry | None = None,
+    reason: str = "",
 ) -> SnapshotDescription:
     return SnapshotDescription(
         file_id=item.file_id,
@@ -1106,6 +1302,7 @@ def _description(
         known_valid=known_valid,
         invalid=invalid,
         md5_checksum=item.md5_checksum,
+        reason=reason,
     )
 
 
@@ -1119,3 +1316,324 @@ def _parse_stamp(value: str) -> datetime | None:
     except ValueError:
         return None
     return parsed.replace(tzinfo=timezone.utc)
+
+
+@dataclass(frozen=True)
+class _LocalHeader:
+    name: str
+    generation: int | None
+    created_at_utc: datetime | None
+    spending_count: int | None
+    income_count: int | None
+    next_id: int | None
+    invalid: bool
+    reason: str
+
+
+_EARLIEST = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def recovery_catalog_uncached(
+    drive: DriveAdapter,
+    directory: Path,
+    *,
+    current_file_id: str | None,
+    current_generation: int | None,
+) -> RecoveryCatalog:
+    """List a folder that has no open snapshot repository. This does not decrypt."""
+    listing = drive.list_for_generation(())
+    described = [
+        _describe_header(drive, item) for item in _snapshot_files(listing.files)
+    ]
+    return _assemble_catalog(
+        list(_with_conflicts(described)),
+        _local_headers(directory),
+        current_file_id=current_file_id,
+        current_generation=current_generation,
+        message="",
+    )
+
+
+def local_recovery_catalog(
+    directory: Path,
+    *,
+    current_generation: int | None,
+    message: str,
+) -> RecoveryCatalog:
+    """Local encrypted copies only. Used when Drive cannot be listed."""
+    return _assemble_catalog(
+        [],
+        _local_headers(directory),
+        current_file_id=None,
+        current_generation=current_generation,
+        message=message,
+    )
+
+
+def recovery_label(item: RecoveryItem) -> str:
+    """One backup described without notes or amounts."""
+    when = (
+        item.created_at_utc.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
+        if item.created_at_utc is not None
+        else "an unknown time"
+    )
+    where = "Drive" if item.source == SOURCE_DRIVE else "this computer"
+    spending = "?" if item.spending_count is None else str(item.spending_count)
+    income = "?" if item.income_count is None else str(item.income_count)
+    generation = "unknown" if item.generation is None else str(item.generation)
+    text = (
+        f"generation {generation} from {when}, saved by {item.saved_by}, "
+        f"on {where}, {spending} spending records and {income} income records"
+    )
+    if item.conflict:
+        text += ", from a conflicting save"
+    return text
+
+
+def summary_text(catalog: RecoveryCatalog) -> str:
+    """A backup list safe to show. It does not include notes or amounts."""
+    lines: list[str] = []
+    if catalog.message.strip():
+        lines.append(catalog.message.strip())
+    if catalog.valid:
+        lines.append("Snapshots that can be restored:")
+        for item in catalog.valid:
+            suffix = " Current." if item.current else ""
+            lines.append(f"- {recovery_label(item)}.{suffix}")
+    else:
+        lines.append("No snapshot can be restored.")
+    if catalog.unusable:
+        lines.append("Copies that cannot be restored:")
+        for item in catalog.unusable:
+            generation = "unknown" if item.generation is None else str(item.generation)
+            where = "Drive" if item.source == SOURCE_DRIVE else "this computer"
+            reason = item.reason or "It could not be used."
+            if item.conflict:
+                reason = f"{reason} Conflicting save."
+            lines.append(f"- Generation {generation} on {where}: {reason}")
+    lines.append("Nothing was changed.")
+    return "\n".join(lines)
+
+
+def _owner_labels(item: DriveFile) -> tuple[str, ...]:
+    return tuple(owner.display_name or owner.email for owner in item.owners)
+
+
+def _with_conflicts(
+    items: Sequence[SnapshotDescription],
+) -> tuple[SnapshotDescription, ...]:
+    counts: dict[int, int] = {}
+    for item in items:
+        if item.generation is None:
+            continue
+        counts[item.generation] = counts.get(item.generation, 0) + 1
+    marked: list[SnapshotDescription] = []
+    for item in items:
+        conflict = item.generation is not None and counts.get(item.generation, 0) > 1
+        if item.conflict == conflict:
+            marked.append(item)
+        else:
+            marked.append(replace(item, conflict=conflict))
+    return tuple(marked)
+
+
+def _describe_header(drive: DriveAdapter, item: DriveFile) -> SnapshotDescription:
+    owners = _owner_labels(item)
+    try:
+        envelope = drive.download(item.file_id)
+        metadata = read_unverified_metadata(envelope)
+    except DriveError:
+        return _description(
+            item,
+            owners,
+            known_valid=False,
+            invalid=True,
+            reason="The snapshot could not be read.",
+        )
+    except CryptoError:
+        return _description(
+            item,
+            owners,
+            known_valid=False,
+            invalid=True,
+            reason=_MALFORMED,
+        )
+    if metadata.generation != item.generation:
+        return _description(
+            item,
+            owners,
+            known_valid=False,
+            invalid=True,
+            reason=_NAME_MISMATCH,
+        )
+    return _description(
+        item,
+        owners,
+        known_valid=False,
+        invalid=False,
+        entry=_entry_from_metadata(item, metadata),
+    )
+
+
+def _local_headers(directory: Path) -> tuple[_LocalHeader, ...]:
+    found: list[_LocalHeader] = []
+    for name in LocalEncryptedCopies(directory).names():
+        path = directory / name
+        try:
+            envelope = path.read_bytes()
+        except OSError:
+            found.append(
+                _LocalHeader(
+                    name,
+                    generation_of_name(name),
+                    None,
+                    None,
+                    None,
+                    None,
+                    True,
+                    "The snapshot could not be read.",
+                )
+            )
+            continue
+        try:
+            metadata = read_unverified_metadata(envelope)
+        except CryptoError:
+            found.append(
+                _LocalHeader(
+                    name,
+                    generation_of_name(name),
+                    None,
+                    None,
+                    None,
+                    None,
+                    True,
+                    _MALFORMED,
+                )
+            )
+            continue
+        if metadata.generation != generation_of_name(name):
+            found.append(
+                _LocalHeader(
+                    name,
+                    generation_of_name(name),
+                    metadata.created_at_utc,
+                    None,
+                    None,
+                    None,
+                    True,
+                    _NAME_MISMATCH,
+                )
+            )
+            continue
+        found.append(
+            _LocalHeader(
+                name,
+                metadata.generation,
+                metadata.created_at_utc,
+                metadata.spending_count,
+                metadata.income_count,
+                metadata.next_id,
+                False,
+                "",
+            )
+        )
+    return tuple(found)
+
+
+def _assemble_catalog(
+    described: Sequence[SnapshotDescription],
+    local_headers: Sequence[_LocalHeader],
+    *,
+    current_file_id: str | None,
+    current_generation: int | None,
+    message: str,
+) -> RecoveryCatalog:
+    valid_drive_names = {item.name for item in described if not item.invalid}
+    rows: list[RecoveryItem] = []
+    for item in described:
+        rows.append(
+            RecoveryItem(
+                key=f"{SOURCE_DRIVE}:{item.file_id}",
+                source=SOURCE_DRIVE,
+                name=item.name,
+                generation=item.generation,
+                created_at_utc=item.created_at_utc,
+                spending_count=item.spending_count,
+                income_count=item.income_count,
+                next_id=item.next_id,
+                saved_by=_saved_by(item.owner_labels),
+                known_valid=item.known_valid,
+                conflict=False,
+                current=bool(current_file_id) and item.file_id == current_file_id,
+                invalid=item.invalid,
+                reason=item.reason,
+            )
+        )
+    for local in local_headers:
+        if not local.invalid and local.name in valid_drive_names:
+            continue
+        rows.append(
+            RecoveryItem(
+                key=f"{SOURCE_LOCAL}:{local.name}",
+                source=SOURCE_LOCAL,
+                name=local.name,
+                generation=local.generation,
+                created_at_utc=local.created_at_utc,
+                spending_count=local.spending_count,
+                income_count=local.income_count,
+                next_id=local.next_id,
+                saved_by=SAVED_BY_THIS_COMPUTER,
+                known_valid=False,
+                conflict=False,
+                current=False,
+                invalid=local.invalid,
+                reason=local.reason,
+            )
+        )
+    counts: dict[int, int] = {}
+    for row in rows:
+        if row.generation is None:
+            continue
+        counts[row.generation] = counts.get(row.generation, 0) + 1
+    marked: list[RecoveryItem] = []
+    for row in rows:
+        conflict = row.generation is not None and counts.get(row.generation, 0) > 1
+        marked.append(replace(row, conflict=conflict))
+    marked.sort(key=_recovery_sort_key, reverse=True)
+    valid = [item for item in marked if not item.invalid]
+    unusable = [item for item in marked if item.invalid]
+    if current_generation is not None and not any(item.current for item in valid):
+        for index, item in enumerate(valid):
+            if item.generation == current_generation:
+                valid[index] = replace(item, current=True)
+                break
+    return RecoveryCatalog(tuple(valid), tuple(unusable), message)
+
+
+def _recovery_sort_key(item: RecoveryItem) -> tuple:
+    when = item.created_at_utc or _EARLIEST
+    return (
+        item.generation if item.generation is not None else -1,
+        when,
+        item.name,
+        item.key,
+    )
+
+
+def _saved_by(labels: Sequence[str]) -> str:
+    cleaned = [label.strip() for label in labels if isinstance(label, str) and label.strip()]
+    if not cleaned:
+        return "Unknown account"
+    text = ", ".join(cleaned)
+    if len(text) > 120:
+        return text[:117] + "..."
+    return text
+
+
+def _split_recovery_key(key: str) -> tuple[str, str]:
+    if not isinstance(key, str):
+        raise SnapshotError("That backup could not be found. Nothing was uploaded.")
+    source, separator, ident = key.partition(":")
+    if separator != ":" or source not in (SOURCE_DRIVE, SOURCE_LOCAL) or not ident:
+        raise SnapshotError("That backup could not be found. Nothing was uploaded.")
+    return source, ident

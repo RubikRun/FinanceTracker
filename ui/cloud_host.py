@@ -15,12 +15,13 @@ from dataclasses import replace
 from finance.drive_adapter import DriveAdapter
 from finance.session import (
     MODE_CLOSED,
+    MODE_EDITABLE,
     MODE_OFFLINE,
     MODE_PAUSED,
     FinanceSession,
     SessionStatus,
 )
-from finance.snapshots import CHOICE_RELOAD_DISCARD
+from finance.snapshots import CHOICE_RELOAD_DISCARD, RecoveryCatalog
 
 from .cloud_status import (
     ACTION_CREATE_LOCK,
@@ -73,6 +74,7 @@ class CloudHost:
         self._listener = None
         self._activity_lock = threading.Lock()
         self._activity_pending = False
+        self.recovery_dialog = None
 
     def attach(self, listener) -> None:
         self._listener = listener
@@ -212,6 +214,23 @@ class CloudHost:
                 return
             self._interaction = True
             self._run(self.session.create_missing_lock, self._after_status)
+
+    def open_backups(self) -> None:
+        """Show Drive and local snapshots. Restore runs only after confirmation."""
+        if (
+            self._shut
+            or self.saving
+            or self._interaction
+            or self._direct
+            or self.runner.busy
+        ):
+            return
+        self._interaction = True
+        self._submit(
+            self.session.list_backups,
+            self._show_backups,
+            lambda result: isinstance(result, RecoveryCatalog),
+        )
 
     def request_close(self) -> None:
         """Ask when a save is running or the session is dirty. Otherwise release the lock."""
@@ -421,6 +440,97 @@ class CloudHost:
             self.prompts.warn("Conflicting save", status.message)
         self._interaction = False
 
+    def _show_backups(self, catalog: RecoveryCatalog) -> None:
+        try:
+            if self._shut:
+                return
+            can_restore = (
+                self.session.can_edit
+                and not self.session.dirty
+                and not self.saving
+                and self.session.status.mode == MODE_EDITABLE
+            )
+            if self.session.dirty:
+                blocked = "Save or discard unsaved changes before restoring."
+            elif self.session.status.mode == MODE_PAUSED:
+                blocked = "Resume editing before restoring. Nothing has been changed."
+            elif not can_restore:
+                blocked = "Restoring needs the editing lock. Nothing has been changed."
+            else:
+                blocked = ""
+            dialog = self._make_recovery_dialog(catalog, can_restore, blocked)
+            accepted = bool(dialog.exec())
+            key = getattr(dialog, "selected_key", None)
+            label = getattr(dialog, "selected_summary", "") or "the selected backup"
+            if not accepted or not isinstance(key, str) or not key or not can_restore:
+                return
+            if not self.prompts.confirm(
+                "Restore this backup?",
+                "This uploads a new snapshot with the data from "
+                f"{label}. The current snapshot stays in the folder as a backup.",
+            ):
+                return
+            self.saving = True
+            self._present(
+                self.session.status,
+                refresh=False,
+                announce_failure=False,
+                announce_reload=False,
+            )
+            self._run(lambda: self.session.restore_backup(key), self._after_restore)
+        finally:
+            if not self.saving:
+                self._interaction = False
+
+    def _after_restore(self, status: SessionStatus) -> None:
+        self.saving = False
+        self._present(status, refresh=True, announce_failure=False, announce_reload=False)
+        lowered = status.message.lower()
+        failed = status.dirty or any(
+            phrase in lowered
+            for phrase in (
+                "nothing was",
+                "not uploaded",
+                "not finished",
+                "could not",
+                "cannot",
+                "needs the",
+                "left in place",
+                "unchanged",
+            )
+        )
+        if failed:
+            self.prompts.warn("Restore", status.message)
+        else:
+            self.prompts.info("Restore", status.message)
+        self._interaction = False
+
+    def _make_recovery_dialog(self, catalog: RecoveryCatalog, can_restore: bool, blocked: str):
+        factory = self.recovery_dialog
+        parent = self._dialog_parent()
+        if factory is None:
+            from .recovery_dialog import RecoveryDialog
+
+            factory = RecoveryDialog
+        return factory(
+            catalog,
+            can_restore=can_restore,
+            blocked_reason=blocked,
+            parent=parent,
+        )
+
+    def _dialog_parent(self):
+        listener = self._listener
+        if listener is None:
+            return None
+        try:
+            from PySide6.QtWidgets import QWidget
+        except Exception:
+            return None
+        if isinstance(listener, QWidget):
+            return listener
+        return None
+
     def _offer_unsaved(self, status: SessionStatus) -> None:
         title, message, options = unsaved_prompt(status)
         picked = self.prompts.choose(title, message, options, warning=True)
@@ -479,6 +589,9 @@ class CloudHost:
             self.prompts.info("Local file", notice)
 
     def _run(self, fn: Callable[[], object], done: Callable[[SessionStatus], None]) -> None:
+        self._submit(fn, done, lambda result: isinstance(result, SessionStatus))
+
+    def _submit(self, fn: Callable[[], object], done: Callable, accept: Callable[[object], bool]) -> None:
         if self._shut:
             return
 
@@ -497,7 +610,7 @@ class CloudHost:
                 )
                 self._maybe_continue_close()
                 return
-            if not isinstance(result, SessionStatus):
+            if not accept(result):
                 self.saving = False
                 self._interaction = False
                 self.prompts.warn(

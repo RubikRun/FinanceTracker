@@ -119,6 +119,7 @@ class MainWindow(QMainWindow):
         self._build_ui()
         if host is None:
             self.sync_panel.hide()
+            self.backups_btn.hide()
             self._apply_mode_ui()
             self._reload_periods()
             return
@@ -193,6 +194,10 @@ class MainWindow(QMainWindow):
         self.chart_btn = QPushButton("Spending chart")
         self.chart_btn.clicked.connect(self._on_spending_chart)
         top.addWidget(self.chart_btn)
+
+        self.backups_btn = QPushButton("Backups")
+        self.backups_btn.clicked.connect(self._on_backups)
+        top.addWidget(self.backups_btn)
 
         top.addStretch(1)
         root.addLayout(top)
@@ -291,6 +296,11 @@ class MainWindow(QMainWindow):
         self.add_btn.setVisible(show_add)
         self.add_btn.setEnabled(edits and not is_combined)
         self.view_only_label.setVisible(is_combined)
+        if self._host is None:
+            self.backups_btn.hide()
+        else:
+            self.backups_btn.show()
+            self.backups_btn.setEnabled(not saving)
 
         # In a personal mode the Who column is redundant — every row is that person.
         # In the combined view it's essential so you can tell records apart.
@@ -461,6 +471,10 @@ class MainWindow(QMainWindow):
         target = (data["date"].year, data["date"].month)
         self._reload_periods(prefer=target)
         return True
+
+    def _on_backups(self) -> None:
+        if self._host is not None:
+            self._host.open_backups()
 
     def _on_spending_chart(self) -> None:
         period = self._period_tuple(self.period_combo.currentData())

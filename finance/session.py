@@ -14,7 +14,8 @@ Startup order, once a Drive connection and a passphrase are available:
 
 Only the editable mode can change records. Read-only, paused, offline, and
 access-lost cannot. Saves upload a new encrypted snapshot. They do not write
-the legacy plaintext file.
+the legacy plaintext file. Restoring a backup uploads it as the next
+generation and leaves the previous snapshot in place until retention runs.
 
 Cloud mode is turned on only after a verified snapshot and the permanent lock
 file both exist. A retry reuses that lock file. The original plaintext file
@@ -81,16 +82,20 @@ from .snapshots import (
     OUTCOME_CONFLICT,
     OUTCOME_EMPTY,
     OUTCOME_LOADED,
+    OUTCOME_REFUSED,
     OUTCOME_SAVED,
     OUTCOME_UNAVAILABLE,
     OUTCOME_UNCHANGED,
     OUTCOME_UNREADABLE,
     LoadResult,
     LocalEncryptedCopies,
+    RecoveryCatalog,
     SaveResult,
     SkippedSnapshot,
     SnapshotError,
     SnapshotRepository,
+    local_recovery_catalog,
+    recovery_catalog_uncached,
 )
 from .store import FinanceStore
 
@@ -258,6 +263,7 @@ class FinanceSession:
         self._store: _SessionStore | None = None
         self._committed: bytes | None = None
         self._generation: int | None = None
+        self._snapshot_id: str | None = None
         self._data_time: str | None = None
         self._skipped: tuple[SkippedSnapshot, ...] = ()
         self._legacy_notice = ""
@@ -489,14 +495,183 @@ class FinanceSession:
             )
         return self._upload_dataset(passphrase, FinanceStore(self._memory_path), None)
 
-    def restore_local_copy(self) -> SessionStatus:
-        """The choice is offered at setup. Performing the restore is a later step."""
-        return self._publish(
-            MODE_SETUP,
-            "Restoring a local encrypted copy into Drive is not available yet. Nothing was uploaded.",
-            can_edit=False,
-            choices=self._status.choices or (CHOICE_CANCEL,),
+    def list_backups(self) -> RecoveryCatalog:
+        """Drive snapshots and local encrypted copies, newest first.
+
+        Record counts come from the snapshot header and Drive owners. This does
+        not decrypt every file and does not include notes.
+        """
+        if self._repo is not None:
+            try:
+                return self._repo.recovery_catalog(
+                    current_file_id=self._snapshot_id,
+                    current_generation=self._generation,
+                )
+            except DriveError as exc:
+                return local_recovery_catalog(
+                    self._local_dir,
+                    current_generation=self._generation,
+                    message=str(exc) + " Showing encrypted copies on this computer.",
+                )
+        try:
+            return recovery_catalog_uncached(
+                self._drive,
+                self._local_dir,
+                current_file_id=self._snapshot_id,
+                current_generation=self._generation,
+            )
+        except DriveError as exc:
+            return local_recovery_catalog(
+                self._local_dir,
+                current_generation=self._generation,
+                message=str(exc) + " Showing encrypted copies on this computer.",
+            )
+
+    def restore_backup(self, key: str) -> SessionStatus:
+        """Upload the selected snapshot's data as the next generation.
+
+        The copy that is current stays in Drive until the new snapshot is
+        verified. A dirty session, or one that does not hold the lock, is
+        refused before anything is uploaded.
+        """
+        if self._closed:
+            return self._publish(
+                MODE_CLOSED, "This session is closed. Nothing was changed.", can_edit=False
+            )
+        if (
+            self._mode != MODE_EDITABLE
+            or self._store is None
+            or self._repo is None
+            or self._lock is None
+        ):
+            return self._publish(
+                self._mode,
+                "Restore needs the editing lock. Nothing was changed.",
+                can_edit=False,
+                choices=self._status.choices,
+            )
+        if self.dirty:
+            return self._publish(
+                MODE_EDITABLE,
+                "Unsaved changes are still here. Save or discard them before restoring. "
+                "Nothing was changed.",
+                can_edit=True,
+                choices=(CHOICE_RETRY_SAVE, CHOICE_RELOAD_DISCARD),
+            )
+        try:
+            plaintext = self._repo.plaintext_for_recovery(key)
+        except SnapshotError as exc:
+            return self._publish(MODE_EDITABLE, str(exc), can_edit=True)
+        if self._committed is not None and plaintext == self._committed:
+            return self._publish(
+                MODE_EDITABLE,
+                "This is already the latest saved data. Nothing was uploaded.",
+                can_edit=True,
+            )
+        confirmed = self._lock.confirm_for_save()
+        if not confirmed.can_edit:
+            return self._from_lock(confirmed)
+        previous = self._store
+        restored = FinanceStore.from_json_bytes(plaintext, self._memory_path)
+        self._store = _SessionStore.adopt(
+            restored, self._memory_path, self._allows_edit, self._after_mutation
         )
+        self._lock.set_dirty(True)
+        try:
+            result = self._repo.save(self._store)
+        except SnapshotError as exc:
+            self._store = previous
+            self._lock.set_dirty(False)
+            return self._publish(
+                MODE_EDITABLE,
+                str(exc) + " The previous snapshot was left in place.",
+                can_edit=True,
+            )
+        if result.outcome == OUTCOME_REFUSED:
+            self._store = previous
+            self._lock.set_dirty(False)
+            return self._publish(
+                MODE_EDITABLE,
+                "Drive has a newer snapshot, so this restore was not uploaded. "
+                "The data on screen is unchanged.",
+                can_edit=True,
+                choices=(CHOICE_RELOAD_DISCARD,),
+            )
+        accepted = result.outcome in (OUTCOME_SAVED, OUTCOME_CONFLICT) and result.adopted
+        if not accepted:
+            self._store = previous
+            self._lock.set_dirty(False)
+            message = result.message
+            if "left in place" not in message.lower() and "not trashed" not in message.lower():
+                message += " The previous snapshot was left in place."
+            return self._publish(
+                MODE_EDITABLE, message, can_edit=True, choices=result.choices
+            )
+        return self._apply_save(result)
+
+    def restore_local_copy(self) -> SessionStatus:
+        """Upload the newest local encrypted copy when the Drive folder has no snapshot."""
+        if self._closed:
+            return self._publish(
+                MODE_CLOSED, "This session is closed. Nothing was uploaded.", can_edit=False
+            )
+        if self._repo is None:
+            return self._publish(
+                MODE_SETUP,
+                "Enter the passphrase before restoring a local copy. Nothing was uploaded.",
+                can_edit=False,
+                choices=(CHOICE_RETRY_PASSPHRASE, CHOICE_CANCEL),
+            )
+        self._ensure_config()
+        problem = self._require_drive()
+        if problem is not None:
+            return problem
+        try:
+            if self._remote_snapshot_count() > 0:
+                return self._publish(
+                    MODE_SETUP,
+                    "This Drive folder already has a snapshot. The local copy was not uploaded.",
+                    can_edit=False,
+                    choices=(CHOICE_CANCEL,),
+                )
+        except DriveError as exc:
+            return self._publish(
+                MODE_ACCESS_LOST, str(exc), can_edit=False, choices=(CHOICE_TRY_AGAIN,)
+            )
+        try:
+            opened = self._repo.open_newest_local()
+        except SnapshotError as exc:
+            return self._publish(
+                MODE_SETUP,
+                str(exc),
+                can_edit=False,
+                choices=self._status.choices or (CHOICE_RETRY_PASSPHRASE, CHOICE_CANCEL),
+            )
+        if opened is None:
+            return self._publish(
+                MODE_SETUP,
+                "There is no local encrypted copy to restore. Nothing was uploaded.",
+                can_edit=False,
+                choices=self._status.choices or (CHOICE_CREATE_EMPTY, CHOICE_CANCEL),
+            )
+        store, source_generation = opened
+        status = self._install_local_dataset(store)
+        if (
+            status.mode == MODE_EDITABLE
+            and status.can_edit
+            and not status.dirty
+            and status.message.startswith("Saved generation")
+        ):
+            return self._publish(
+                status.mode,
+                status.message
+                + f" The data came from the local encrypted copy of generation {source_generation}.",
+                can_edit=True,
+                choices=status.choices,
+                reloaded=status.reloaded,
+                backup_path=status.backup_path,
+            )
+        return status
 
     def save(self) -> SessionStatus:
         """Upload one new snapshot when this session still holds the lock and something changed."""
@@ -705,6 +880,60 @@ class FinanceSession:
         self._adopt(loaded, notice=True)
         return "reloaded"
 
+    def _install_local_dataset(self, source: FinanceStore) -> SessionStatus:
+        """Create or reuse the lock, then upload ``source`` when the folder is still empty."""
+        ensured = self._ensure_lock_file()
+        if isinstance(ensured, SessionStatus):
+            return ensured
+        self._ensure_lock_session()
+        assert self._lock is not None and self._repo is not None
+        status = self._lock.start()
+        if not status.can_edit:
+            return self._from_lock(status)
+        try:
+            loaded = self._repo.load_latest()
+        except (SnapshotError, DriveError) as exc:
+            return self._publish(
+                MODE_EDITABLE,
+                str(exc),
+                can_edit=True,
+                choices=(CHOICE_RETRY_SAVE, CHOICE_CANCEL),
+            )
+        if loaded.outcome == OUTCOME_LOADED and loaded.store is not None:
+            self._adopt(loaded, notice=True)
+            self._maybe_enable()
+            return self._publish(
+                MODE_EDITABLE,
+                "A snapshot was already in the folder. The local copy was not uploaded over it.",
+                can_edit=True,
+            )
+        if loaded.outcome != OUTCOME_EMPTY:
+            return self._publish(
+                MODE_EDITABLE,
+                loaded.message,
+                can_edit=True,
+                choices=loaded.choices or (CHOICE_CANCEL,),
+            )
+        self._store = _SessionStore.adopt(
+            source, self._memory_path, self._allows_edit, self._after_mutation
+        )
+        self._committed = None
+        self._generation = None
+        self._snapshot_id = None
+        self._data_time = None
+        self._legacy_notice = self._notice_for_legacy()
+        self._lock.set_dirty(True)
+        try:
+            result = self._repo.save(self._store)
+        except SnapshotError as exc:
+            return self._publish(
+                MODE_EDITABLE,
+                str(exc),
+                can_edit=True,
+                choices=(CHOICE_RETRY_SAVE, CHOICE_CANCEL),
+            )
+        return self._apply_save(result)
+
     def _upload_dataset(
         self,
         passphrase: str,
@@ -792,6 +1021,8 @@ class FinanceSession:
             self._committed = self._store.to_json_bytes()
             if result.generation is not None:
                 self._generation = result.generation
+            if result.adopted and (result.current_file_id or result.file_id):
+                self._snapshot_id = result.current_file_id or result.file_id
             self._lock.set_dirty(False)
             self._maybe_enable()
             return self._publish(MODE_EDITABLE, result.message, can_edit=True, choices=result.choices)
@@ -847,11 +1078,11 @@ class FinanceSession:
             )
             if not cloud:
                 choices.append(CHOICE_CREATE_EMPTY)
-        if local_names and not cloud:
+        if local_names:
             choices.append(CHOICE_RESTORE_LOCAL)
             parts.append(
                 "A local encrypted copy is on this computer. "
-                "Restoring it into this folder is offered here and performed in a later step."
+                "Restoring it uploads that copy as a new encrypted snapshot and creates the lock file."
             )
         if cloud:
             parts.append(
@@ -1125,6 +1356,7 @@ class FinanceSession:
         )
         self._committed = self._store.to_json_bytes()
         self._generation = loaded.generation
+        self._snapshot_id = loaded.file_id
         self._skipped = loaded.skipped
         if loaded.metadata is not None:
             self._data_time = _human_time(loaded.metadata.created_at_utc)

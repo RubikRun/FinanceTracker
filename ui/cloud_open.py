@@ -28,6 +28,8 @@ from finance.snapshots import (
     CHOICE_CANCEL,
     CHOICE_INSPECT_RECOVER,
     CHOICE_RETRY_PASSPHRASE,
+    RecoveryCatalog,
+    summary_text,
 )
 
 _Call = Callable[[Callable[[], object]], object]
@@ -38,7 +40,7 @@ _CHOICE_LABELS = {
     CHOICE_RESTORE_LOCAL: "Restore a local encrypted copy",
     CHOICE_CANCEL: "Cancel",
     CHOICE_RETRY_PASSPHRASE: "Try the passphrase again",
-    CHOICE_INSPECT_RECOVER: "Backup browsing is not available yet",
+    CHOICE_INSPECT_RECOVER: "Show backups",
     CHOICE_RETRY_SAVE: "Try again",
     CHOICE_TRY_AGAIN: "Try again",
     CHOICE_REVERIFY: "Try again",
@@ -58,6 +60,12 @@ _NEW_PASSPHRASE_INTRO = (
 _BACKUP_INTRO = (
     "Choose a folder for the plaintext backup. The backup is not encrypted. "
     "Keep it outside the shared Drive folder."
+)
+_RESTORE_LOCAL_INTRO = (
+    "This uploads the newest encrypted copy on this computer as a new snapshot "
+    "in the empty Drive folder, and creates the lock file if it is missing. "
+    "The copy on this computer stays where it is. "
+    "If this folder should already have your data, cancel and check the folder."
 )
 
 
@@ -100,16 +108,37 @@ def _dispatch(session, prompts, picked: str, invoke: _Call) -> SessionStatus | N
     if picked == CHOICE_CREATE_EMPTY:
         return _create_empty(session, prompts, invoke)
     if picked == CHOICE_RESTORE_LOCAL:
+        if not prompts.confirm("Restore the local copy?", _RESTORE_LOCAL_INTRO):
+            return None
         return _as_status(invoke(session.restore_local_copy))
     if picked == CHOICE_INSPECT_RECOVER:
-        prompts.info(
-            "Recovery",
-            "Backup browsing is not in the window yet. Nothing was changed.",
-        )
-        return None
+        return _inspect(session, prompts, invoke)
     if picked in (CHOICE_RETRY_PASSPHRASE, CHOICE_TRY_AGAIN, CHOICE_REVERIFY):
         return _open_again(session, prompts, invoke)
     prompts.warn("Finance Tracker", "That choice is not available. Nothing was changed.")
+    return None
+
+
+def _inspect(session, prompts, invoke: _Call) -> SessionStatus | None:
+    lister = getattr(session, "list_backups", None)
+    if not callable(lister):
+        prompts.info(
+            "Backups",
+            "Backup browsing is not available from here. Nothing was changed.",
+        )
+        return None
+    try:
+        catalog = invoke(lister)
+    except Exception:
+        prompts.warn("Backups", "The backup list could not be read. Nothing was changed.")
+        return None
+    if isinstance(catalog, Exception):
+        prompts.warn("Backups", "The backup list could not be read. Nothing was changed.")
+        return None
+    if not isinstance(catalog, RecoveryCatalog):
+        prompts.warn("Backups", "The backup list could not be read. Nothing was changed.")
+        return None
+    prompts.info("Backups", summary_text(catalog))
     return None
 
 
