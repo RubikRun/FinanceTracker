@@ -18,8 +18,9 @@ synthetic marker files only when someone runs that check.
 ``python -m finance.snapshot_check`` uploads synthetic encrypted snapshots
 only when someone runs that check. ``python -m finance.lock_check`` exercises
 the lock on the dry-run folder. ``finance.session`` ties those pieces
-together. The GUI does not call it yet. Once cloud mode is on, ``cli.py``
-refuses to run and does not read the legacy finance file.
+together. The window uses ``finance.session`` once a Drive folder is saved.
+Until then it still uses the local finance file. Once cloud mode is on,
+``cli.py`` refuses to run and does not read the legacy finance file.
 """
 from .config import (
     CATEGORIES,

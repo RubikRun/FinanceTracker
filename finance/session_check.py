@@ -11,8 +11,8 @@ must be outside the shared Drive folder and outside the local encrypted-copy
 folder. ``create-empty`` uploads an empty generation-1 snapshot. ``open``
 loads the newest snapshot.
 
-The FinanceTracker window does not use this session yet. Turning cloud mode
-on here affects only this dry-run profile.
+The FinanceTracker window uses this session when a Drive folder is saved for
+the profile. Turning cloud mode on here affects only this dry-run profile.
 """
 
 from __future__ import annotations
@@ -156,7 +156,7 @@ def _run_parsed(parsed, prompt, output: TextIO, opener, sleep) -> int:
         )
     print(f"Profile: {app_config_dir()}", file=output)
     print(
-        "The FinanceTracker window does not use this session yet. "
+        "The FinanceTracker window uses this session when a Drive folder is saved. "
         "Cloud mode here applies only to this dry-run profile.",
         file=output,
     )

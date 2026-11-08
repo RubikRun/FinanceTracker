@@ -1,6 +1,7 @@
 """Drive lock, same-computer process lock, and idle release.
 
-``finance.session`` calls this module. The GUI does not call it directly.
+``finance.session`` calls this module. Startup reads ``TIMER_POLL_SECONDS``
+for the window's poll timer. The window does not call ``LockSession``.
 Nothing here reads or writes the finance file, and nothing here deletes the
 Drive lock. The lock is the contents of ``finance_lock.json``. It is read and
 updated by the cached file id. ``appProperties`` are not used.

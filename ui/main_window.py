@@ -6,8 +6,9 @@ from datetime import date
 from decimal import Decimal
 from typing import Optional
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QObject, Qt, QTimer
 from PySide6.QtWidgets import (
+    QApplication,
     QComboBox,
     QGroupBox,
     QHBoxLayout,
@@ -34,9 +35,11 @@ from finance.config import (
     VIEW_BOTH_LABEL,
     format_amount,
 )
+from finance.session import SessionError
 from finance.store import FinanceStore, month_range
 
 from .add_dialog import AddDialog
+from .cloud_status import CloudView
 from .spending_chart_dialog import SpendingChartDialog
 
 # Tab indices — keep in sync with the order tabs are added in `_build_ui`.
@@ -46,6 +49,25 @@ _TAB_BOTH = 2
 
 # Column index of the "Who" column in both tables (hidden in personal modes).
 _WHO_COLUMN = 1
+
+_ACTIVITY_EVENTS = (
+    QEvent.KeyPress,
+    QEvent.MouseButtonPress,
+    QEvent.MouseButtonDblClick,
+    QEvent.Wheel,
+    QEvent.MouseMove,
+    QEvent.Shortcut,
+)
+
+_TONE_STYLE = {
+    "ok": "font-size: 13px; font-weight: bold; color: #166534;",
+    "pending": "font-size: 13px; font-weight: bold; color: #1f2937;",
+    "warn": (
+        "font-size: 13px; font-weight: bold; color: #9a3412; "
+        "background: #fff7ed; padding: 2px 6px;"
+    ),
+    "muted": "font-size: 13px; font-weight: bold; color: #1f2937;",
+}
 
 
 class _NoFocusDelegate(QStyledItemDelegate):
@@ -62,17 +84,49 @@ class _NoFocusDelegate(QStyledItemDelegate):
         super().paint(painter, option, index)
 
 
+class _ActivityFilter(QObject):
+    """Forwards key and mouse events to the session without calling Drive itself."""
+
+    def __init__(self, host) -> None:
+        super().__init__()
+        self._host = host
+
+    def eventFilter(self, watched, event) -> bool:
+        del watched
+        if event.type() in _ACTIVITY_EVENTS:
+            self._host.note_activity()
+        return False
+
+
 class MainWindow(QMainWindow):
-    def __init__(self, store: FinanceStore) -> None:
+    def __init__(self, store: FinanceStore, host=None, poll_ms: int = 10_000) -> None:
         super().__init__()
         self.store = store
+        self._host = host
+        self._poll_ms = poll_ms
         # Active person filter: a user name, or None for the combined view.
         self._view_user: Optional[str] = USER_BORIS
+        self._cloud_view: CloudView | None = None
+        self._quit_accepted = False
+        self._close_started = False
+        self._shut_down = False
+        self._add_dialog_factory = AddDialog
+        self._delete_confirmation = None
+        self._activity: _ActivityFilter | None = None
+        self._poll_timer: QTimer | None = None
         self.setWindowTitle("Finance Tracker")
-        self.resize(860, 660)
+        self.resize(860, 720 if host is not None else 660)
         self._build_ui()
-        self._apply_mode_ui()
-        self._reload_periods()
+        if host is None:
+            self.sync_panel.hide()
+            self._apply_mode_ui()
+            self._reload_periods()
+            return
+        setter = getattr(host.prompts, "set_parent", None)
+        if setter is not None:
+            setter(self)
+        self._install_cloud_runtime()
+        host.attach(self)
 
     # ------------------------------------------------------------------ #
     # UI construction
@@ -92,6 +146,29 @@ class MainWindow(QMainWindow):
         self.mode_tabs.addTab(VIEW_BOTH_LABEL.replace("&", "&&"))
         self.mode_tabs.currentChanged.connect(self._on_mode_changed)
         root.addWidget(self.mode_tabs)
+
+        self.sync_panel = QWidget()
+        self.sync_panel.setObjectName("syncPanel")
+        sync_layout = QVBoxLayout(self.sync_panel)
+        sync_layout.setContentsMargins(0, 4, 0, 4)
+        sync_row = QHBoxLayout()
+        self.sync_label = QLabel("")
+        self.sync_label.setObjectName("syncStatus")
+        self.sync_action = QPushButton("")
+        self.sync_action.setObjectName("syncAction")
+        self.sync_action.clicked.connect(self._on_sync_action)
+        self.sync_action.hide()
+        sync_row.addWidget(self.sync_label)
+        sync_row.addWidget(self.sync_action)
+        sync_row.addStretch(1)
+        sync_layout.addLayout(sync_row)
+        self.sync_detail = QLabel("")
+        self.sync_detail.setObjectName("syncDetail")
+        self.sync_detail.setWordWrap(True)
+        self.sync_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.sync_detail.setStyleSheet("color: #4b5563;")
+        sync_layout.addWidget(self.sync_detail)
+        root.addWidget(self.sync_panel)
 
         # --- Top bar: Add button + period selector ---
         top = QHBoxLayout()
@@ -206,7 +283,13 @@ class MainWindow(QMainWindow):
     def _apply_mode_ui(self) -> None:
         """Show/hide Add vs view-only hint, and the Who column."""
         is_combined = self._view_user is None
-        self.add_btn.setVisible(not is_combined)
+        edits = self._host is None or (
+            self._cloud_view is not None and self._cloud_view.edits_offered
+        )
+        saving = self._cloud_view is not None and self._cloud_view.saving
+        show_add = not is_combined and (edits or saving)
+        self.add_btn.setVisible(show_add)
+        self.add_btn.setEnabled(edits and not is_combined)
         self.view_only_label.setVisible(is_combined)
 
         # In a personal mode the Who column is redundant — every row is that person.
@@ -332,39 +415,52 @@ class MainWindow(QMainWindow):
     # Actions
     # ------------------------------------------------------------------ #
     def _on_add(self) -> None:
+        self._with_edit(self._add_from_dialog)
+
+    def _add_from_dialog(self) -> None:
+        if self._add_record(save=self._host is None) and self._host is not None:
+            self._host.after_local_change()
+
+    def _add_record(self, *, save: bool) -> bool:
         if self._view_user is None:
-            return  # Combined view is view-only (button is hidden, but be safe).
+            return False  # Combined view is view-only (button is hidden, but be safe).
 
         period = self._period_tuple(self.period_combo.currentData())
         default_date = date(period[0], period[1], 1) if period else None
-        dialog = AddDialog(
+        dialog = self._add_dialog_factory(
             for_user=self._view_user, parent=self, default_date=default_date
         )
         if not dialog.exec():
-            return  # Cancelled
+            return False  # Cancelled
 
         data = dialog.result_data
-        if data["type"] == "spending":
-            self.store.add_spending(
-                amount=data["amount"],
-                category=data["category"],
-                on_date=data["date"],
-                user=data["user"],
-                note=data["note"],
-            )
-        else:
-            self.store.add_income(
-                amount=data["amount"],
-                on_date=data["date"],
-                user=data["user"],
-                note=data["note"],
-            )
-        self.store.save()
+        try:
+            if data["type"] == "spending":
+                self.store.add_spending(
+                    amount=data["amount"],
+                    category=data["category"],
+                    on_date=data["date"],
+                    user=data["user"],
+                    note=data["note"],
+                )
+            else:
+                self.store.add_income(
+                    amount=data["amount"],
+                    on_date=data["date"],
+                    user=data["user"],
+                    note=data["note"],
+                )
+        except SessionError as exc:
+            QMessageBox.warning(self, "Finance Tracker", str(exc))
+            return False
+        if save:
+            self.store.save()
 
         # A new record may introduce a new month; rebuild and then jump to the
         # month of the record we just added so the user sees it immediately.
         target = (data["date"].year, data["date"].month)
         self._reload_periods(prefer=target)
+        return True
 
     def _on_spending_chart(self) -> None:
         period = self._period_tuple(self.period_combo.currentData())
@@ -392,6 +488,8 @@ class MainWindow(QMainWindow):
             return
 
         table.selectRow(row)
+        if self._cloud_view is not None and not self._cloud_view.edits_offered:
+            return
         menu = QMenu(self)
         edit_action = menu.addAction("Edit")
         delete_action = menu.addAction("Delete")
@@ -402,10 +500,17 @@ class MainWindow(QMainWindow):
             self._on_delete(int(record_id))
 
     def _on_edit(self, record_id: int) -> None:
+        self._with_edit(lambda: self._edit_record(record_id))
+
+    def _edit_record(self, record_id: int) -> None:
         spending = self.store.get_spending(record_id)
         income = self.store.get_income(record_id)
         record = spending if spending is not None else income
         if record is None:
+            if self._host is not None:
+                QMessageBox.information(
+                    self, "Finance Tracker", "That record is not in the current data."
+                )
             return
 
         initial = {
@@ -419,20 +524,26 @@ class MainWindow(QMainWindow):
 
         old_period = (record.date.year, record.date.month)
 
-        dialog = AddDialog(for_user=record.user, parent=self, initial=initial)
+        dialog = self._add_dialog_factory(for_user=record.user, parent=self, initial=initial)
         if not dialog.exec():
             return
 
         data = dialog.result_data
-        self.store.update_record(
-            record_id,
-            record_type=data["type"],
-            amount=data["amount"],
-            on_date=data["date"],
-            note=data["note"],
-            category=data.get("category", ""),
-        )
-        self.store.save()
+        try:
+            self.store.update_record(
+                record_id,
+                record_type=data["type"],
+                amount=data["amount"],
+                on_date=data["date"],
+                note=data["note"],
+                category=data.get("category", ""),
+            )
+        except SessionError as exc:
+            QMessageBox.warning(self, "Finance Tracker", str(exc))
+            return
+        save = self._host is None
+        if save:
+            self.store.save()
 
         new_period = (data["date"].year, data["date"].month)
         if new_period == old_period:
@@ -441,12 +552,21 @@ class MainWindow(QMainWindow):
         else:
             # Date moved to another month (the old month may now be empty).
             self._reload_periods(prefer=new_period)
+        if self._host is not None:
+            self._host.after_local_change()
 
     def _on_delete(self, record_id: int) -> None:
+        self._with_edit(lambda: self._delete_record(record_id))
+
+    def _delete_record(self, record_id: int) -> None:
         spending = self.store.get_spending(record_id)
         income = self.store.get_income(record_id)
         record = spending if spending is not None else income
         if record is None:
+            if self._host is not None:
+                QMessageBox.information(
+                    self, "Finance Tracker", "That record is not in the current data."
+                )
             return
 
         when = record.date.strftime(DISPLAY_DATE_FORMAT)
@@ -458,21 +578,136 @@ class MainWindow(QMainWindow):
             kind = "income"
             detail = f"{amount} on {when}"
 
-        answer = QMessageBox.question(
-            self,
-            "Delete record",
-            f"Delete this {kind} for {record.user}?\n{detail}",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if answer != QMessageBox.Yes:
+        question = f"Delete this {kind} for {record.user}?\n{detail}"
+        if self._delete_confirmation is not None:
+            confirmed = self._delete_confirmation(question)
+        else:
+            answer = QMessageBox.question(
+                self,
+                "Delete record",
+                question,
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            confirmed = answer == QMessageBox.Yes
+        if not confirmed:
             return
 
         period = self._period_tuple(self.period_combo.currentData())
-        self.store.delete_record(record_id)
-        self.store.save()
+        try:
+            self.store.delete_record(record_id)
+        except SessionError as exc:
+            QMessageBox.warning(self, "Finance Tracker", str(exc))
+            return
+        if self._host is None:
+            self.store.save()
 
         if period is not None and period in self.store.available_months(self._view_user):
             self._refresh_view()
         else:
             self._reload_periods(prefer=period)
+        if self._host is not None:
+            self._host.after_local_change()
+
+    def _with_edit(self, run) -> None:
+        if self._host is None:
+            run()
+            return
+        self._host.begin_mutation(run)
+
+    def apply_view(self, view: CloudView, *, refresh_records: bool) -> None:
+        self._cloud_view = view
+        if self._host is not None and self._host.session.store is not None:
+            self.store = self._host.session.store
+        self._show_sync(view)
+        self._apply_mode_ui()
+        if refresh_records:
+            current = self._period_tuple(self.period_combo.currentData())
+            self._reload_periods(prefer=current)
+
+    def quit_accepted(self) -> None:
+        if self._poll_timer is not None:
+            self._poll_timer.stop()
+        self._quit_accepted = True
+        QTimer.singleShot(0, self.close)
+
+    def close_cancelled(self) -> None:
+        self._close_started = False
+
+    def accepts_quit(self) -> bool:
+        return self._host is None or self._quit_accepted
+
+    def shutdown(self) -> None:
+        if self._shut_down:
+            return
+        self._shut_down = True
+        if self._poll_timer is not None:
+            self._poll_timer.stop()
+        if self._activity is not None:
+            app = QApplication.instance()
+            if app is not None:
+                app.removeEventFilter(self._activity)
+            self._activity = None
+        if self._host is not None:
+            self._host.shutdown()
+
+    def handle_commit_data(self, manager) -> None:
+        """Windows shutdown and logoff. A prompt is possible only when the OS allows it."""
+        if self._host is None or self._shut_down or self._quit_accepted:
+            return
+        allows = False
+        try:
+            allows = bool(manager.allowsInteraction())
+        except Exception:
+            allows = False
+        if not allows:
+            self._host.release_if_idle()
+            return
+        if self._host.close_synchronously():
+            self._quit_accepted = True
+            return
+        try:
+            manager.cancel()
+        except Exception:
+            return
+
+    def closeEvent(self, event) -> None:
+        if self._host is None or self._quit_accepted:
+            event.accept()
+            return
+        event.ignore()
+        if self._close_started:
+            return
+        self._close_started = True
+        self._host.request_close()
+
+    def _install_cloud_runtime(self) -> None:
+        app = QApplication.instance()
+        if app is not None:
+            self._activity = _ActivityFilter(self._host)
+            app.installEventFilter(self._activity)
+        if self._poll_ms > 0:
+            self._poll_timer = QTimer(self)
+            self._poll_timer.setInterval(self._poll_ms)
+            self._poll_timer.timeout.connect(self._poll_cloud)
+            self._poll_timer.start()
+
+    def _poll_cloud(self) -> None:
+        if self._host is not None and not self._shut_down:
+            self._host.poll()
+
+    def _on_sync_action(self) -> None:
+        if self._host is not None:
+            self._host.primary_action()
+
+    def _show_sync(self, view: CloudView) -> None:
+        self.sync_panel.show()
+        self.sync_label.setText(view.title)
+        self.sync_label.setStyleSheet(_TONE_STYLE.get(view.tone, _TONE_STYLE["muted"]))
+        self.sync_detail.setText(view.detail)
+        if view.action_label:
+            self.sync_action.setText(view.action_label)
+            self.sync_action.show()
+            self.sync_action.setEnabled(not view.saving)
+        else:
+            self.sync_action.hide()

@@ -5,15 +5,16 @@ file, opens a browser when no refresh token is stored, and saves a Drive
 folder id only after showing that folder's name and owner.
 
 It does not upload finance data, does not ask for the finance passphrase, and
-does not turn cloud mode on. The FinanceTracker window still reads and writes
-the local JSON file. A later step turns cloud mode on only after a verified
-generation-1 snapshot and the permanent lock file both exist.
+does not turn cloud mode on. Opening the FinanceTracker window with this
+profile uses the saved Drive folder and does not write the local finance
+file. Cloud mode turns on only after a verified generation-1 snapshot and
+the permanent lock file both exist.
 
 The Drive call here is only ``files.get`` for the pasted folder (or for a
 shortcut's target). The request timeout is 30 seconds. Listing, download,
 upload, trash, and the lock file are in ``finance.drive_adapter``.
 ``python -m finance.drive_check`` is the manual shared-folder check. The
-FinanceTracker window still does not call either of them.
+window reaches Drive through ``finance.session``, not through this command.
 """
 
 from __future__ import annotations
@@ -242,7 +243,8 @@ def _run_setup(
     print("No token file was written.", file=output)
     print("No finance data was uploaded.", file=output)
     print(
-        "Cloud sync is not on. The FinanceTracker window still uses the local finance file.",
+        "Cloud sync is not on. Opening the FinanceTracker window with this profile "
+        "uses this Drive folder and does not write the local finance file.",
         file=output,
     )
     print(

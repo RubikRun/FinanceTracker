@@ -1,7 +1,8 @@
 """UI-independent finance session: passphrase, lock, snapshots, and migration.
 
-The GUI does not call this module yet. A later step will. The CLI does not
-call it either, except to notice that cloud mode is on and refuse to run.
+The window uses this module once a Drive folder is saved on the computer.
+The CLI does not call it, except to notice that cloud mode is on and refuse
+to run.
 
 Startup order, once a Drive connection and a passphrase are available:
 

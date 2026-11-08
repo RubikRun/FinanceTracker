@@ -1,8 +1,8 @@
 """Google Drive operations for one configured folder.
 
-``finance.session`` calls this module. The GUI does not call it directly.
-Nothing here reads or writes the local finance file, and nothing here stores
-a passphrase or a refresh token.
+The GUI opens one adapter and gives it to ``finance.session``. Widgets do not
+list, upload, or trash files themselves. Nothing here reads or writes the
+local finance file, and nothing here stores a passphrase or a refresh token.
 
 ``GoogleDriveAdapter`` is the only object that talks to Drive. The session
 is given that object, or a stand-in with the same methods. Tests pass a
