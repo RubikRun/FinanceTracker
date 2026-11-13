@@ -1,6 +1,18 @@
 # Personal financial data — do not commit
 finance_data.json
+finance_data-*.json
 *.tmp
+*.enc
+*.decrypted.json
+
+# Per-user profile files, if a copy is ever placed in this tree.
+# The real copies belong in the user config directory, or in
+# FINANCETRACKER_CONFIG_DIR. Test fixtures under tests/ stay tracked.
+config.json
+known_valid.json
+lock_session.json
+process.lock
+encrypted_snapshots/
 
 # Python
 __pycache__/

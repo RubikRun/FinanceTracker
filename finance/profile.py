@@ -1,8 +1,9 @@
 """Per-user configuration paths and the non-secret local config file.
 
-The finance JSON stays beside the program until cloud mode is turned on by a
-later step. This module is where the app keeps everything else that is local
-to one computer:
+Once a Drive folder is saved for the profile in use, the window uses the
+encrypted session and does not write the finance JSON. A profile with no
+folder id still saves that file beside the program. This module is where the
+app keeps everything else that is local to one computer:
 
 - ``config.json`` — machine id, Drive folder id, lock-file id, cloud-mode flag
 - the desktop OAuth client file the user copies in
