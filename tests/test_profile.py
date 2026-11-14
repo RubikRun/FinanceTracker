@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 import pytest
-from platformdirs import user_config_dir
+from platformdirs import user_config_dir, windows as windows_dirs
 from platformdirs.macos import MacOS
 from platformdirs.windows import Windows
 
@@ -79,12 +79,21 @@ def test_default_config_dir_is_the_platform_user_dir_not_the_repo(
     assert directory.resolve() not in repo.resolve().parents
 
 
-def test_windows_and_macos_directories_are_outside_the_repository() -> None:
+def test_windows_and_macos_directories_are_outside_the_repository(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
     repo = Path(__file__).resolve().parents[1]
+    redirected_local_app_data = tmp_path / "RedirectedLocalData"
+
+    def get_win_folder(folder: str) -> str:
+        assert folder == "CSIDL_LOCAL_APPDATA"
+        return str(redirected_local_app_data)
+
+    monkeypatch.setattr(windows_dirs, "get_win_folder", get_win_folder)
     windows = Path(Windows(appname=APP_NAME, appauthor=False).user_config_dir)
     macos_text = MacOS(appname=APP_NAME, appauthor=False).user_config_dir.replace("\\", "/")
 
-    assert windows.parts[-3:] == ("AppData", "Local", APP_NAME)
+    assert windows == redirected_local_app_data / APP_NAME
     assert macos_text.endswith("Library/Application Support/FinanceTracker")
     for path in (windows, Path(macos_text)):
         resolved = path.resolve()

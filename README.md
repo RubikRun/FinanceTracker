@@ -1,8 +1,16 @@
 # Finance Tracker
 
-A small desktop app for Boris and Milena's household income and spending, built with Python and Qt (PySide6). It runs on Windows and macOS.
+A Python and Qt (PySide6) desktop app for Boris and Milena's household income and spending on Windows and macOS. The person tabs filter records and assign ownership to new entries. Secure Sync uses each person's Google account for Drive access and one shared finance passphrase for encryption.
 
-Until a Drive folder is saved for the profile in use, records live in one hand-editable JSON file next to the program. After that folder is saved, the window keeps the records as encrypted snapshots in that shared Google Drive folder. Google Drive never receives the readable finance JSON. There is no database and no account login. Choosing Boris or Milena only filters records and sets the owner of a new one.
+## Secure Sync rollout
+
+`master` is the local-file version. The desktop sync implementation is on `secure-sync`. The branch reached Step 11 of the [GUI plan](planning/FinanceTracker_SecureSync_ImplementationPlan.md). The remaining acceptance work is to verify the shared folder and the full synthetic workflow on Windows and macOS with both Google accounts, then import the real file once on Windows and open the same dataset on the Mac.
+
+1. Use a separate checkout, a dedicated test Drive folder and a dry-run profile on each computer. Follow [Google sign-in setup](#google-sign-in-setup) and the [shared-folder check](#shared-folder-check).
+2. Check [snapshot history](#snapshot-history-check) and [lock behavior](#lock-check) with synthetic data. Use the [synthetic session check](#synthetic-session-check) for a complete rehearsal.
+3. Follow [real migration](#real-migration) with a fresh production Drive folder after the rehearsal passes.
+
+The [CLI sync plan](planning/FinanceTracker_SecureSync_CLI_ImplementationPlan.md) starts after GUI acceptance. Use the desktop app for the rollout.
 
 ## What it does
 
@@ -49,7 +57,6 @@ FinanceTracker/
 ├── main.py               # launches the GUI
 ├── cli.py                # local-file commands; refuses to run once cloud mode is on
 ├── lib_requirements.txt  # runtime dependencies
-├── requirements-dev.txt  # pytest
 ├── tests/                # synthetic data only; no network
 └── finance_data.json     # local JSON, created on first local save; not in Git
 ```
@@ -58,7 +65,7 @@ The window and the CLI do not edit the JSON file themselves. They call the `fina
 
 ## Setup
 
-You need **Python 3.9+**. Python 3.14 is what this copy has been run with. Use a virtual environment.
+Use **Python 3.14** in a virtual environment. The Windows automated suite was run with Python 3.14.3.
 
 ### Windows (PowerShell)
 
@@ -66,7 +73,7 @@ You need **Python 3.9+**. Python 3.14 is what this copy has been run with. Use a
 cd C:\dev\FinanceTracker
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
-pip install -r lib_requirements.txt
+python -m pip install -r lib_requirements.txt
 ```
 
 ### macOS (Terminal)
@@ -75,7 +82,7 @@ pip install -r lib_requirements.txt
 cd /path/to/FinanceTracker
 python3 -m venv .venv
 source .venv/bin/activate
-pip install -r lib_requirements.txt
+python -m pip install -r lib_requirements.txt
 ```
 
 Runtime libraries are PySide6, `cryptography`, the Google API client, `keyring`, and `platformdirs`. They are listed in `lib_requirements.txt`. There is no `requirements.txt`.
@@ -97,14 +104,14 @@ Which data the window opens depends on the profile for this process:
 
 Leave `FINANCETRACKER_CONFIG_DIR` unset for normal use and for the real migration. Set it only for the test-folder commands below. The dry-run keyring name is `FinanceTracker-profile-` plus a hash of that directory. The production name is `FinanceTracker`. A dry-run cannot write the production Google credential.
 
-If the profile has no Drive folder id, the window loads and saves `finance_data.json` next to the program. If it has a folder id, the window asks who is using the computer and for the finance passphrase, then opens the encrypted dataset. It does not write `finance_data.json`.
+With cloud mode off and no Drive folder ID, the window loads and saves `finance_data.json` beside the program. With a saved folder ID, it enters the cloud startup flow and asks who is using the computer and for the finance passphrase. The profile variable does not change the local JSON path. Use a separate checkout for dry runs so the real JSON is out of reach of that checkout's import and local-mode flows.
 
 ## Run the tests
 
 From the project root, with the virtual environment activated:
 
 ```bash
-pip install -r requirements-dev.txt
+python -m pip install "pytest>=8.4"
 python -m pytest
 ```
 
@@ -141,15 +148,15 @@ Both computers use **one** Google Cloud project and **the same** desktop client 
 5. Fill in the app name, a user support email, and a developer contact email. These are shown on the consent screen.
 6. Open Data access / Scopes and add `https://www.googleapis.com/auth/drive`. The description is "See, edit, create, and delete all of your Google Drive files." Do **not** choose the narrower "only the specific Google Drive files you use with this app" scope (`drive.file`).
 7. Open [Clients](https://console.cloud.google.com/auth/clients) (older consoles: **APIs & Services → Credentials → Create credentials → OAuth client ID**). Create a client of type **Desktop app**. Download the JSON once.
-8. Open [Audience](https://console.cloud.google.com/auth/audience) and **Publish app**. Confirm the publishing status is **In production**. Do not submit the app for Google verification. An unverified production app is allowed for personal use; Google shows a warning and caps it at 100 users, which is fine for two people.
+8. Open **Audience**, select **Publish app** and confirm the status is **In production**. Google allows limited personal-use apps to skip verification. Both users can expect an unverified-app warning. [Google's personal-use verification guidance](https://support.google.com/cloud/answer/13464323)
 
-Publishing status **Testing** makes refresh tokens die after 7 days, so both of you would have to sign in again every week. In production they do not. After you finish sign-in, look again after more than 7 days: the setup command should reuse the saved sign-in. If Google asks you to consent again, the app is still in Testing.
+For this scope, an External app in **Testing** gets refresh tokens that expire after seven days. **In production** removes that fixed testing limit. Tokens can still expire or be revoked. [Google's refresh-token expiration rules](https://developers.google.com/identity/protocols/oauth2#expiration)
 
 ### Why this is the full Drive scope
 
-`drive.file` only lets the app see files that this installation created, and only for the Google account that created them. The other person's app cannot see those files, even inside a folder you both share. Choosing the folder in Google's file picker grants access to the folder itself, not to files the other account adds later. Every save is a new file, so that scope cannot work. The app uses the full Drive scope. The Drive adapter then restricts every list, download, upload, and trash to the one folder you confirm. The token itself can still reach the rest of that Google account's Drive; that is the accepted tradeoff.
+The app must discover snapshots that either account adds to the shared folder. Google's `drive.file` grants per-file access, so this folder-link workflow uses the full `drive` scope. The token can reach the account's Drive. The adapter restricts app operations to the confirmed folder and its matching snapshot and lock files. [Google Drive scope reference](https://developers.google.com/workspace/drive/api/guides/api-specific-auth)
 
-Google Advanced Protection, or a Workspace-managed account, can block an unverified app and hide the "Advanced" link below. If that happens, stop and say so. Do not continue to the shared-folder Drive tests.
+Google Advanced Protection or a Workspace policy can block authorization. Both accounts need to authorize successfully for the shared-folder checks. [Google App Audience guidance](https://support.google.com/cloud/answer/15549945)
 
 ### 2. Shared test folder
 
@@ -196,10 +203,8 @@ The refresh token is stored in the operating-system credential store (Windows Cr
 - The dry-run folder has `config.json` with `"cloud_mode": false` and no finance records. It has no `token.json`.
 - `git status` in the project does not show the client JSON, a token file, or `config.json`.
 - The shared Drive folder has no new file.
-- With `FINANCETRACKER_CONFIG_DIR` **unset**, `python main.py` still opens the local JSON file, because this setup wrote the folder id only into the dry-run profile.
-- With the dry-run variable still set, `python main.py` opens the encrypted session for the **test** folder. If it offers to import the local finance file, cancel. That file is the real dataset. Synthetic import uses `session_check` below, with a copy.
-- In Google Cloud, Audience / the consent screen still says user type **External** and publishing status **In production**.
-- More than 7 days later, run the setup command again. Expected: it still reuses the saved sign-in. A new consent screen means the app is still in Testing.
+- In Google Cloud, confirm user type **External** and publishing status **In production**.
+- More than seven days after authorization, verify saved sign-in on both computers. Run the setup command if cloud mode is still off, or relaunch the synced GUI if it is already on. If Google requests consent, check the publishing status and whether the token was revoked.
 
 If either Google account cannot get past the unverified-app warning, stop. The shared-folder check below should not start on a sign-in that did not work.
 
@@ -231,7 +236,7 @@ On the other account, `partner` with those two ids lists the files, downloads th
 
 Back on the account that ran `create`, `finish` with the same ids reads the updated lock by file id and moves both files to that account's Drive trash. They are not permanently deleted. In the Drive website, the test folder should be empty, both files should be in that account's trash, and nothing outside the test folder should have changed. Leave the folder empty.
 
-`ping` reads the folder and Drive's clock. With the network disconnected first, it should fail within 30 seconds with a message that Drive could not be reached or did not answer. It should not hang. While the network is connected, it prints the folder name and a Drive time in UTC.
+`ping` reads the folder and Drive's clock. Online it prints the folder name and Drive time in UTC. Offline it should report the failure. The Drive HTTP requests have a 30-second timeout per request.
 
 `create` always reads the new snapshot back with `files.get`. If the folder listing is slow, it also says the listing had not caught up and the snapshot is still treated as saved. Either sentence is a successful read-back.
 
@@ -303,7 +308,7 @@ Do this only after both Google accounts have passed the sign-in, shared-folder, 
 
 ### Passphrase
 
-The finance passphrase is shared by Boris and Milena and is asked for on every launch. It is not saved in the app, the config file, Google Drive, or the OS keychain. On the first dataset (empty, imported, or restored from a local encrypted copy) it must be typed twice.
+Both people enter the same finance passphrase on every launch. The app keeps it for the session. When creating or importing a dataset, choose the new passphrase and enter it twice. Restoring an encrypted copy uses its existing passphrase.
 
 A forgotten passphrase makes the data and every backup permanently unreadable. There is no recovery. Store it in a password manager. Changing the passphrase is not supported.
 
@@ -311,7 +316,7 @@ A forgotten passphrase makes the data and every backup permanently unreadable. T
 
 Each successful add, edit, or delete uploads one new encrypted file, named like `finance_snapshot_g000123_<UTC time>_<random>.enc`. The generation number increases by one. The window says **Saving…** while that upload is checked, and **Connected — saved** only after the downloaded bytes match what was encrypted. Closing a window that is already saved does not upload another copy.
 
-If the upload fails, the change stays on screen and the status says it is not saved. Retry from the status line. The previous snapshot is left in place.
+If a save cannot be verified, the change stays on screen as unsaved and the previous good snapshot stays in Drive. Retry from the status line while you still hold the lock. If Drive received the upload before verification was interrupted, reopening can show that generation. Check the existing dataset and Backups before entering the change again. When a newer generation blocks a stale save, the app offers to keep the unsaved change visible or reload the Drive copy and discard it. It does not merge changes.
 
 ### Lock
 
@@ -332,15 +337,15 @@ A wrong passphrase does not create an empty dataset and does not change Drive. I
 
 ### Backups and restore
 
-Drive keeps the 20 newest known-valid snapshots, plus the newest known-valid snapshot of each of the last 30 UTC days, and never fewer than 5 known-valid snapshots. Each Google account moves only its own old snapshots to that account's Drive trash. Nothing is permanently deleted. A file that fails decryption is left in place and shown under **Cannot be restored**.
+Retention keeps the 20 newest known-valid snapshots plus the newest known-valid snapshot from each of the last 30 UTC days. Pruning runs only after a verified save and preserves at least five known-valid snapshots when pruning is possible. Each Google account moves only its own eligible files to Drive trash. Extra files can remain if the current profile has yet to verify them or they belong to the other account. Known invalid files stay in place and appear under **Cannot be restored**.
 
 This computer also keeps the 10 newest encrypted snapshots in the profile directory (`encrypted_snapshots`). Those files are ciphertext.
 
-**Backups** lists generation, time, the Google account that saved the file, and the spending and income counts. It does not show notes. Restore uploads the chosen data as a new latest snapshot. The snapshot you were looking at remains available unless retention later moves it to trash. Restore is refused while there are unsaved changes, and it is refused unless this window holds the lock.
+**Backups** lists generation, time, source, and record counts. Drive entries use the owner's Google account label where available. Snapshot headers expose counts, generation, time, and next ID. Transaction details are encrypted. A readable header alone does not verify a snapshot. Restore verifies the selected data and, if it differs from the current data, uploads it as a new generation. Restore requires the editing lock and a clean window.
 
 ### Command line
 
-`cli.py` still edits the local JSON file when cloud mode is off for the profile in use:
+`cli.py` reads and writes the checkout's local JSON when cloud mode is off for the active profile, even immediately after `google_setup` saves a folder ID. Use the GUI during migration and for synced records.
 
 ```bash
 python cli.py add-spending Boris 14.20 Groceries 2026-06-11 --note "toilet paper"
@@ -350,7 +355,7 @@ python cli.py summary 2026 6 --user Boris
 python cli.py list 2026 6 --user Milena
 ```
 
-Once cloud mode is on, every `cli.py` command prints that the CLI does not support synced data yet and exits non-zero. It does not read or write `finance_data.json`. A separate plan covers bringing the CLI onto the session. Until then, use the window.
+Once cloud mode is on, every `cli.py` command exits nonzero with an explanation before it opens `finance_data.json`. The `python -m finance.*_check` commands are separate test utilities.
 
 ## Local JSON, before sync
 
@@ -371,42 +376,40 @@ Once cloud mode is on, every `cli.py` command prints that the CLI does not suppo
 
 IDs are one shared sequence across income and spending. Every record has a `user` of `Boris` or `Milena`. The path is `default_data_path()` in `finance/config.py`.
 
-Two computers must not edit this file at the same time. Each save replaces the whole file. After cloud mode is on, the window does not write this file. Migration does not delete it. Keep the dated plaintext backup from the import until you have checked the cloud data and Backups, then store that backup somewhere safe. It is still readable JSON.
+Each local save replaces the whole file. Git ignores this file, so switching branches in the same checkout leaves it in place and another checkout starts without it. Migration preserves the source and creates a dated plaintext backup. Keep both in a protected local location outside Drive while you confirm the cloud data and Backups.
 
 ## Synthetic session check
 
-Run this against the **empty test folder** and a **dry-run** profile, on Windows and again on the Mac, before anyone imports the real file. `session_check` refuses the real `finance_data.json` next to the program. Make a small copy that contains only made-up records and pass that copy.
+Use the separate test checkout and the confirmed dry-run profile on each computer. Start with a test folder that has zero snapshots. A valid, free lock left by `lock_check` can be reused. Use fresh profiles and a fresh test folder if a previous rehearsal already enabled cloud mode.
 
-Windows PowerShell, from the project directory, with the virtual environment active:
-
-```powershell
-$env:FINANCETRACKER_CONFIG_DIR = "$env:LOCALAPPDATA\FinanceTracker-dry-run"
-.\.venv\Scripts\python.exe -m finance.session_check migrate --owner Boris --source C:\path\to\synthetic-copy.json --backup-dir C:\path\to\plaintext-backups
-.\.venv\Scripts\python.exe -m finance.session_check open --owner Boris
-```
-
-macOS:
-
-```bash
-export FINANCETRACKER_CONFIG_DIR="$HOME/Library/Application Support/FinanceTracker-dry-run"
-python -m finance.session_check open --owner Milena
-```
-
-`migrate` asks for the passphrase twice, writes a dated plaintext backup, uploads generation 1, and turns cloud mode on for **this dry-run profile** only after that snapshot verifies and the lock file exists. The source copy is not modified. A wrong passphrase or a failed upload leaves cloud mode off.
-
-Then launch the window with the same variable still set:
+On Windows, create a fictional October dataset in the **test checkout**. These commands use the active virtual environment. The first command opens the file in exclusive-create mode, so it fails if a file already exists.
 
 ```powershell
-.\.venv\Scripts\python.exe main.py
+python -c "from pathlib import Path; Path('finance_data.json').open('x', encoding='utf-8').write('{}')"
 ```
 
-Expected: the passphrase opens the synthetic data, an add then an edit then a delete each leave one new snapshot, **Backups** can restore an older one as a newer generation, and the previous snapshot is still in the folder. Disconnect the network and start again: the window is read-only and names the generation and time. `python cli.py summary 2026 10` exits non-zero and does not change the local JSON file.
+After that command succeeds, add the synthetic records and launch the GUI.
 
-On the Mac, `open` should show the same latest generation. It should not offer to create an empty dataset. If it does, the folder or the sharing is wrong. Cancel.
+```powershell
+python cli.py add-income Milena 100 2026-10-01 --note "Synthetic income"
+python cli.py add-spending Boris 14.20 Groceries 2026-10-02 --note "Synthetic spending"
+python main.py
+```
 
-`create-empty` is only for a test folder that should start blank. It also asks for the passphrase twice.
+In the window, enter the test passphrase at the initial unlock prompt. Choose **Import the local finance file**, confirm the passphrase twice and pick a local backup directory. Expect a dated backup, unchanged source, generation 1 and one permanent lock. The combined October totals should be earned €100, spent €14.20 and gap €85.80.
 
-When the synthetic check is finished, trash the test snapshots from each account (each account can trash only its own files) and leave the test folder empty, or leave them if you still want them as practice data. Do not point the production profile at this test folder.
+On the Mac, activate its virtual environment in the test checkout, use its separate dry-run profile, confirm the same folder via `python -m finance.google_setup` and run `python main.py`. Use Milena's account and the same test passphrase. Cancel setup if the app offers to create an empty dataset.
+
+### Acceptance checklist
+
+- Wait at least a minute between opening the apps on the two computers. Open the Mac while the Windows app still holds the lock. The Mac shows the same data and names Boris as the lock holder. Close the Windows app, then use **Try again** on the Mac to take the lock.
+- From the test window, add, edit and delete a fictional record. Check **Backups** after each save and confirm the generation advances once. Verify the month tabs, totals, tables and chart. Reopen on the other computer and compare.
+- Restore a version containing different data. It becomes the next generation and the previously current snapshot remains available. Inspect the test folder for encrypted snapshots and one lock. For corruption recovery, use only disposable synthetic files and check fallback to a good copy.
+- Reopen with a wrong passphrase and check that the folder is unchanged. Then reopen with the correct one. Disconnect the network and relaunch after an online open has populated the cache. Expect read-only data with the saved generation and time.
+- On both machines, check clean close, crash recovery, idle release and resume after the other machine saves. After sleep, confirm the old window cannot save until it verifies lock ownership again. For failed or stale saves, verify the change stays visibly unsaved and existing snapshots remain usable. The automated suite exercises these fault paths with fake Drive.
+- In each synced dry-run profile, `python cli.py summary 2026 10` must exit nonzero and leave the test checkout's JSON untouched.
+
+`finance.session_check` is available for a terminal-only synthetic migration or open check. It accepts an explicit synthetic source with `migrate --source` and refuses the checkout's default `finance_data.json` as that argument. The GUI rehearsal above tests the same import path used for the real rollout.
 
 ## Real migration
 
@@ -422,14 +425,14 @@ echo $env:FINANCETRACKER_CONFIG_DIR
 
 The echo should print nothing.
 
-3. Copy the same desktop client JSON to the production profile. `python -m finance.google_setup` prints the path on the first run. It is `%LOCALAPPDATA%\FinanceTracker\google_oauth_client.json`. Run `python -m finance.google_setup`, sign in as Boris, paste the **real** folder link, and confirm the folder name and owner before answering yes.
-4. Run `python main.py`. The window asks who is using it and for a new passphrase, twice. Choose a folder for the plaintext backup that is outside Drive and outside the FinanceTracker profile. The backup is readable JSON. Keep it until you have opened the data on both computers and tried **Backups**. Then put it somewhere safe and do not commit it.
+3. In the Windows checkout that contains the authoritative `finance_data.json`, run the reviewed `secure-sync` version. Copy the same desktop client JSON to the production profile. `python -m finance.google_setup` prints the exact path when the client file is missing. Run setup as Boris, paste the production folder link and confirm its name and owner.
+4. Run `python main.py`. Confirm the folder, select Boris and enter the passphrase you plan to use at the initial unlock prompt. Choose **Import the local finance file**, enter the new passphrase twice and select a private local backup folder outside Drive and the FinanceTracker profile. Keep the dated plaintext backup while you check both computers and **Backups**.
 5. Expected after a successful import: cloud mode is on, the original `finance_data.json` is unchanged, Drive contains `finance_lock.json` and `finance_snapshot_g000001_….enc`, and the window shows the same months and totals as before. Open **Backups** and confirm generation 1 is listed. Do not paste amounts or notes into a chat or a commit message.
-6. On the Mac, with `FINANCETRACKER_CONFIG_DIR` unset, copy the same client JSON to `~/Library/Application Support/FinanceTracker/google_oauth_client.json`. Run `python -m finance.google_setup` as Milena and paste the same real folder link.
+6. On the Mac, use the same reviewed version with `FINANCETRACKER_CONFIG_DIR` unset (`unset FINANCETRACKER_CONFIG_DIR`). Copy the same client JSON to the production path printed by `python -m finance.google_setup`. Run setup as Milena and paste the same production folder link.
 7. Run `python main.py` on the Mac. Enter the same passphrase. Expected: the Windows data opens. The empty-dataset question should not appear. If it does, cancel and check the folder id and the Editor share.
 8. Use the two computers one after another, at least a minute apart. Add a record on one, close the window, and open the other. The new record should be there. While one window is open and not paused, the other should be read-only.
 
-If import fails, cloud mode stays off, the original file is unchanged, and you can run `python main.py` again. A retry reuses the lock file instead of creating a second one.
+If verification is interrupted, keep the original and backup. Drive may already have received the encrypted upload. Reopen the same folder with the same passphrase and check whether generation 1 opens. If Drive is still empty, retry the import. An existing valid lock file is reused.
 
 ## Changing categories, currency or people
 
